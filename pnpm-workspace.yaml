@@ -1,0 +1,16 @@
+packages:
+  - "."
+
+allowBuilds:
+  electron: true
+  electron-winstaller: true
+  esbuild: true
+  tesseract.js: true
+  uiohook-napi: true
+
+onlyBuiltDependencies:
+  - electron
+  - electron-winstaller
+  - esbuild
+  - tesseract.js
+  - uiohook-napi

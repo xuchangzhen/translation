@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN" class="overlay-page">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:;"
+    />
+    <title>选择翻译区域</title>
+  </head>
+  <body class="overlay-body">
+    <div id="shade-top" class="shade-piece"></div>
+    <div id="shade-left" class="shade-piece"></div>
+    <div id="shade-right" class="shade-piece"></div>
+    <div id="shade-bottom" class="shade-piece"></div>
+    <div id="selection">
+      <span id="selection-size"></span>
+      <i class="selection-handle handle-nw" data-resize-handle="nw"></i>
+      <i class="selection-handle handle-n" data-resize-handle="n"></i>
+      <i class="selection-handle handle-ne" data-resize-handle="ne"></i>
+      <i class="selection-handle handle-e" data-resize-handle="e"></i>
+      <i class="selection-handle handle-se" data-resize-handle="se"></i>
+      <i class="selection-handle handle-s" data-resize-handle="s"></i>
+      <i class="selection-handle handle-sw" data-resize-handle="sw"></i>
+      <i class="selection-handle handle-w" data-resize-handle="w"></i>
+    </div>
+    <div id="selection-actions" hidden>
+      <button id="selection-reselect" type="button">重新框选</button>
+      <button id="selection-confirm" type="button">截图翻译</button>
+    </div>
+    <div id="overlay-tip">
+      <span class="overlay-tip-icon">译</span>
+      <span><strong>框选要翻译的内容</strong><small>拖动选择区域 · 右键 / Esc 取消</small></span>
+    </div>
+    <script type="module" src="/src/overlay.ts"></script>
+  </body>
+</html>
