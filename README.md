@@ -109,7 +109,7 @@ pnpm install --frozen-lockfile
 pnpm build:win
 ```
 
-推送 `v*` 标签或手动运行 GitHub Actions 的 `build-desktop` 工作流，会分别在 macOS 和 Windows runner 中生成安装包。
+推送 `v*` 标签或手动运行 GitHub Actions 的“构建桌面安装包”工作流，会分别在 macOS 和 Windows 构建环境中生成安装包。
 
 ## 已知边界
 
@@ -119,6 +119,6 @@ pnpm build:win
 - 当前 Windows 构建目标为 x64；如需 arm64，可在 `package.json` 的 builder 配置中增加目标架构。
 - 本项目参考 Immersive Translate 的“随处触发、上下文翻译、专业术语解释”产品思路；其当前公开仓库不是源代码仓库，本项目未复制其实现。
 
-## License
+## 许可证
 
 MIT

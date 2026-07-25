@@ -4,7 +4,7 @@
   "private": true,
   "description": "跨平台全局划词与截图翻译工具",
   "main": "src/main.cjs",
-  "author": "翻译 contributors",
+  "author": "翻译项目贡献者",
   "license": "MIT",
   "packageManager": "pnpm@11.9.0",
   "scripts": {

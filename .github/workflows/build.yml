@@ -1,4 +1,4 @@
-name: build-desktop
+name: 构建桌面安装包
 
 on:
   workflow_dispatch:
@@ -8,6 +8,7 @@ on:
 
 jobs:
   build:
+    name: 构建 ${{ runner.os }} 安装包
     strategy:
       matrix:
         include:
@@ -21,19 +22,25 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - name: 检出源码
+        uses: actions/checkout@v4
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
         with:
           version: 11.9.0
-      - uses: actions/setup-node@v4
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm run ${{ matrix.command }}
+      - name: 安装项目依赖
+        run: pnpm install --frozen-lockfile
+      - name: 检查并构建安装包
+        run: pnpm run ${{ matrix.command }}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      - uses: actions/upload-artifact@v4
+      - name: 保存安装包
+        uses: actions/upload-artifact@v4
         with:
-          name: LinguaBridge-${{ runner.os }}
+          name: 翻译-${{ runner.os }}
           path: ${{ matrix.artifact }}
