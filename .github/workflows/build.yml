@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    name: 构建 ${{ runner.os }} 安装包
+    name: 构建 ${{ matrix.os }} 安装包
     strategy:
       matrix:
         include:
