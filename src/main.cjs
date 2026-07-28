@@ -42,7 +42,8 @@ const {
   ensureLocalOllamaRunning
 } = require("./lib/ollama-service.cjs");
 const {
-  popupBoundsNearPoint
+  popupBoundsNearPoint,
+  popupWindowPresentation
 } = require("./lib/windowing.cjs");
 
 let mainWindow;
@@ -299,6 +300,20 @@ function popupBounds(width, height) {
   return popupBoundsNearPoint(cursor, display.workArea, width, height);
 }
 
+function revealTranslationPopup() {
+  if (!popupWindow || popupWindow.isDestroyed()) return;
+  const presentation = popupWindowPresentation(
+    process.platform,
+    store.data.popupAlwaysOnTop
+  );
+  popupWindow.setAlwaysOnTop(
+    presentation.initiallyAboveOtherApps,
+    "floating"
+  );
+  popupWindow.showInactive();
+  popupWindow.moveTop();
+}
+
 function showTranslationPopup(payload) {
   enterBackgroundWindowMode();
   suppressMainWindowActivation = true;
@@ -307,6 +322,10 @@ function showTranslationPopup(payload) {
   const width = 480;
   const height = payload.result ? 520 : 270;
   const position = popupBounds(width, height);
+  const presentation = popupWindowPresentation(
+    process.platform,
+    store.data.popupAlwaysOnTop
+  );
 
   if (!popupWindow || popupWindow.isDestroyed()) {
     popupWindow = new BrowserWindow({
@@ -317,17 +336,14 @@ function showTranslationPopup(payload) {
       minHeight: 210,
       maxWidth: 560,
       maxHeight: 680,
-      type:
-        process.platform === "darwin" && store.data.popupAlwaysOnTop
-          ? "panel"
-          : undefined,
+      type: presentation.type,
       frame: false,
       transparent: true,
       resizable: false,
       show: false,
       skipTaskbar: true,
       acceptFirstMouse: true,
-      alwaysOnTop: Boolean(store.data.popupAlwaysOnTop),
+      alwaysOnTop: presentation.initiallyAboveOtherApps,
       hasShadow: false,
       webPreferences: {
         preload: path.join(__dirname, "preload.cjs"),
@@ -336,13 +352,15 @@ function showTranslationPopup(payload) {
         sandbox: false
       }
     });
-    popupWindow.loadURL(rendererUrl("popup.html"));
-    if (store.data.popupAlwaysOnTop) {
-      popupWindow.setAlwaysOnTop(true, "floating");
+    if (process.platform === "darwin") {
+      popupWindow.setVisibleOnAllWorkspaces(true, {
+        visibleOnFullScreen: true,
+        skipTransformProcessType: true
+      });
     }
+    popupWindow.loadURL(rendererUrl("popup.html"));
     popupWindow.once("ready-to-show", () => {
-      popupWindow.showInactive();
-      popupWindow.moveTop();
+      revealTranslationPopup();
       setTimeout(() => {
         suppressMainWindowActivation = false;
       }, 350);
@@ -390,9 +408,7 @@ function showTranslationPopup(payload) {
 
   popupWindow.setSize(width, height);
   popupWindow.setPosition(position.x, position.y);
-  popupWindow.setAlwaysOnTop(Boolean(store.data.popupAlwaysOnTop), "floating");
-  popupWindow.showInactive();
-  popupWindow.moveTop();
+  revealTranslationPopup();
   popupWindow.webContents.send("popup:start", payload);
   setTimeout(() => {
     suppressMainWindowActivation = false;
@@ -409,12 +425,7 @@ function togglePopupVisibility() {
     enterBackgroundWindowMode();
     suppressMainWindowActivation = true;
     popupManuallyHidden = false;
-    popupWindow.setAlwaysOnTop(
-      Boolean(store.data.popupAlwaysOnTop),
-      "floating"
-    );
-    popupWindow.showInactive();
-    popupWindow.moveTop();
+    revealTranslationPopup();
     setTimeout(() => {
       suppressMainWindowActivation = false;
     }, 350);
@@ -743,6 +754,13 @@ function dismissUnpinnedPopupFromGlobalClick() {
     point.y >= bounds.y &&
     point.y < bounds.y + bounds.height;
   if (clickedInside) return;
+  const presentation = popupWindowPresentation(
+    process.platform,
+    store.data.popupAlwaysOnTop
+  );
+  if (presentation.releaseOnOutsideClick) {
+    popupWindow.setAlwaysOnTop(false);
+  }
   setTimeout(async () => {
     if (
       clickSerial !== popupDismissClickSerial ||

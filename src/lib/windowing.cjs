@@ -16,4 +16,16 @@ function popupBoundsNearPoint(cursor, area, width, height, margin = 10) {
   };
 }
 
-module.exports = { popupBoundsNearPoint };
+function popupWindowPresentation(platform, pinned) {
+  const isMac = platform === "darwin";
+  return {
+    type: isMac ? "panel" : undefined,
+    initiallyAboveOtherApps: isMac || Boolean(pinned),
+    releaseOnOutsideClick: isMac && !pinned
+  };
+}
+
+module.exports = {
+  popupBoundsNearPoint,
+  popupWindowPresentation
+};

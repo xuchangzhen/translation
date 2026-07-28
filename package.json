@@ -1,6 +1,6 @@
 {
   "name": "linguabridge",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "private": true,
   "description": "跨平台全局划词与截图翻译工具",
   "main": "src/main.cjs",

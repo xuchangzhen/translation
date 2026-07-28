@@ -1,7 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
-  popupBoundsNearPoint
+  popupBoundsNearPoint,
+  popupWindowPresentation
 } = require("../src/lib/windowing.cjs");
 
 test("popup moves above a Windows cursor near the taskbar instead of staying at the bottom", () => {
@@ -23,4 +24,25 @@ test("popup stays below the cursor when enough work area is available", () => {
     520
   );
   assert.equal(bounds.y, 118);
+});
+
+test("unpinned macOS popup starts above the active app and releases on outside click", () => {
+  assert.deepEqual(popupWindowPresentation("darwin", false), {
+    type: "panel",
+    initiallyAboveOtherApps: true,
+    releaseOnOutsideClick: true
+  });
+});
+
+test("pinned macOS popup stays floating and Windows keeps normal window behavior", () => {
+  assert.deepEqual(popupWindowPresentation("darwin", true), {
+    type: "panel",
+    initiallyAboveOtherApps: true,
+    releaseOnOutsideClick: false
+  });
+  assert.deepEqual(popupWindowPresentation("win32", false), {
+    type: undefined,
+    initiallyAboveOtherApps: false,
+    releaseOnOutsideClick: false
+  });
 });
