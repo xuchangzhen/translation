@@ -1,4 +1,4 @@
-type Provider = "ollama" | "openai" | "compatible" | "codex";
+type Provider = "ollama" | "google" | "openai" | "compatible" | "codex";
 
 interface AppSettings {
   provider: Provider;
@@ -9,6 +9,8 @@ interface AppSettings {
   popupToggleShortcut: string;
   ollamaUrl: string;
   ollamaModel: string;
+  ollamaTranslationModel: string;
+  useTranslateGemma: boolean;
   openaiBaseUrl: string;
   openaiModel: string;
   compatibleBaseUrl: string;
@@ -79,6 +81,7 @@ interface LinguaApi {
     message: string;
   }>;
   codexModels(settings?: Partial<AppSettings>): Promise<CodexModel[]>;
+  ollamaModels(settings?: Partial<AppSettings>): Promise<OllamaModel[]>;
   synthesizeSpeech(
     text: string,
     language: string
@@ -122,6 +125,11 @@ interface LinguaApi {
     platform: string;
     isPackaged: boolean;
   }>;
+  getUpdateStatus(): Promise<UpdateStatus>;
+  checkForUpdates(): Promise<UpdateStatus>;
+  downloadUpdate(): Promise<UpdateStatus>;
+  installUpdate(): Promise<boolean>;
+  onUpdateStatus(callback: (payload: UpdateStatus) => void): () => void;
   onTranslationStart(
     callback: (payload: { text: string; source: string }) => void
   ): () => void;
@@ -160,12 +168,35 @@ interface LinguaApi {
   cancelSelection(): Promise<boolean>;
 }
 
+interface UpdateStatus {
+  status:
+    | "idle"
+    | "checking"
+    | "available"
+    | "downloading"
+    | "downloaded"
+    | "current"
+    | "error"
+    | "development";
+  message: string;
+  progress: number;
+  version: string;
+}
+
 interface CodexModel {
   id: string;
   name: string;
   description: string;
   defaultReasoning: string;
   reasoningLevels: string[];
+}
+
+interface OllamaModel {
+  name: string;
+  size: number;
+  parameterSize: string;
+  quantization: string;
+  family: string;
 }
 
 interface Window {

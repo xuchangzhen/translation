@@ -4,6 +4,7 @@ const path = require("node:path");
 const { safeStorage } = require("electron");
 
 const DEFAULT_SETTINGS = Object.freeze({
+  settingsSchemaVersion: 2,
   provider: "ollama",
   sourceLanguage: "auto",
   targetLanguage: "zh-CN",
@@ -12,13 +13,15 @@ const DEFAULT_SETTINGS = Object.freeze({
   popupToggleShortcut: "CommandOrControl+Shift+H",
   ollamaUrl: "http://127.0.0.1:11434",
   ollamaModel: "qwen3:8b",
+  ollamaTranslationModel: "translategemma:4b",
+  useTranslateGemma: true,
   openaiBaseUrl: "https://api.openai.com/v1",
   openaiModel: "gpt-5.6-luna",
   compatibleBaseUrl: "http://127.0.0.1:1234/v1",
   compatibleModel: "local-model",
   codexPath: "",
   codexModel: "",
-  speechProvider: process.platform === "darwin" ? "mambo" : "system",
+  speechProvider: "mambo",
   mamboUrl: "http://127.0.0.1:9880",
   mamboRoot: path.join(
     os.homedir(),
@@ -40,7 +43,16 @@ class SettingsStore {
   read() {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf8"));
-      return { ...DEFAULT_SETTINGS, ...parsed };
+      const migrated = { ...parsed };
+      if (
+        Number(migrated.settingsSchemaVersion || 0) < 2 &&
+        process.platform === "win32" &&
+        migrated.speechProvider === "system"
+      ) {
+        migrated.speechProvider = "mambo";
+      }
+      migrated.settingsSchemaVersion = DEFAULT_SETTINGS.settingsSchemaVersion;
+      return { ...DEFAULT_SETTINGS, ...migrated };
     } catch {
       return { ...DEFAULT_SETTINGS };
     }
@@ -72,6 +84,8 @@ class SettingsStore {
       "popupToggleShortcut",
       "ollamaUrl",
       "ollamaModel",
+      "ollamaTranslationModel",
+      "useTranslateGemma",
       "openaiBaseUrl",
       "openaiModel",
       "compatibleBaseUrl",

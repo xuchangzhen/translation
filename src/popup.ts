@@ -2,10 +2,21 @@ import "./styles.css";
 import { speakText } from "./speech";
 
 const root = document.querySelector<HTMLDivElement>("#popup-root")!;
+const POPUP_TARGET_LANGUAGES = [
+  ["zh-CN", "简体中文"],
+  ["zh-TW", "繁体中文"],
+  ["en", "English"],
+  ["ja", "日本語"],
+  ["ko", "한국어"],
+  ["de", "Deutsch"],
+  ["fr", "Français"],
+  ["es", "Español"],
+  ["ru", "Русский"]
+] as const;
 let sourceText = "";
 let currentResult: TranslationResult | null = null;
 let providerName = "翻译服务";
-let speechPreparationTimer: number | undefined;
+let currentTargetLanguage = "zh-CN";
 
 function icon(name: "close" | "copy" | "speaker" | "expand") {
   const paths = {
@@ -112,8 +123,40 @@ function isSingleEnglishWord(value: string) {
   return /^[A-Za-z][A-Za-z.'’_-]*$/.test(value.trim());
 }
 
+function normalizedTargetLanguage(value: string, fallback = "zh-CN") {
+  const direct = POPUP_TARGET_LANGUAGES.find(([code]) => code === value)?.[0];
+  if (direct) return direct;
+  const aliases: Record<string, string> = {
+    简体中文: "zh-CN",
+    繁体中文: "zh-TW",
+    英语: "en",
+    日语: "ja",
+    韩语: "ko",
+    德语: "de",
+    法语: "fr",
+    西班牙语: "es",
+    俄语: "ru"
+  };
+  return aliases[value] || fallback;
+}
+
+function popupTargetLanguageOptions(selected: string) {
+  return POPUP_TARGET_LANGUAGES.map(
+    ([code, label]) =>
+      `<option value="${code}" ${code === selected ? "selected" : ""}>${label}</option>`
+  ).join("");
+}
+
+function popupTargetLanguageLabel(code: string) {
+  return POPUP_TARGET_LANGUAGES.find(([value]) => value === code)?.[1] || code;
+}
+
 function renderResult(result: TranslationResult, source: string) {
   currentResult = result;
+  currentTargetLanguage = normalizedTargetLanguage(
+    result.targetLanguage,
+    currentTargetLanguage
+  );
   const terms = result.terms.slice(0, 6);
   const sourceNeedsToggle =
     sourceText.length > 110 || sourceText.split(/\r?\n/).length > 3;
@@ -177,7 +220,16 @@ function renderResult(result: TranslationResult, source: string) {
   root.innerHTML = shell(
     `<div class="popup-content">
       ${sourceMarkup}
-      <div class="popup-result-heading"><span>译文</span><button id="speak-result" class="popup-icon-button popup-speech-button" title="朗读译文">${icon("speaker")}<span>朗读译文</span></button></div>
+      <div class="popup-result-heading">
+        <span>译文</span>
+        <div class="popup-result-actions">
+          <label class="popup-language-picker">
+            <span>翻译为</span>
+            <select id="popup-target-language" aria-label="重新选择翻译语言">${popupTargetLanguageOptions(currentTargetLanguage)}</select>
+          </label>
+          <button id="speak-result" class="popup-icon-button popup-speech-button" title="朗读译文">${icon("speaker")}<span>朗读译文</span></button>
+        </div>
+      </div>
       <p class="popup-translation">${escapeHtml(result.translation)}</p>
       ${phonetic}
       ${explanation}
@@ -198,6 +250,14 @@ function renderResult(result: TranslationResult, source: string) {
   document.querySelector("#expand-result")?.addEventListener("click", () => {
     void window.lingua.openPopupInMain({ text: sourceText, result });
   });
+  document
+    .querySelector("#popup-target-language")
+    ?.addEventListener("change", (event) => {
+      const targetLanguage = (event.target as HTMLSelectElement).value;
+      if (targetLanguage !== currentTargetLanguage) {
+        void retranslatePopup(targetLanguage, source);
+      }
+    });
   document
     .querySelectorAll<HTMLButtonElement>("[data-toggle-target]")
     .forEach((button) => {
@@ -228,33 +288,39 @@ function renderResult(result: TranslationResult, source: string) {
     await speakText(result.translation, result.targetLanguage);
     button.disabled = false;
   });
-  document.querySelector("#speak-result")?.addEventListener("pointerenter", () => {
-    void window.lingua.prepareSpeech(
-      result.translation,
-      result.targetLanguage
-    );
-  });
-  window.clearTimeout(speechPreparationTimer);
-  if (/[\u3400-\u9fff]/.test(result.translation)) {
-    speechPreparationTimer = window.setTimeout(() => {
-      void window.lingua.prepareSpeech(
-        result.translation,
-        result.targetLanguage
-      );
-    }, 900);
-  }
   resizeSoon();
+}
+
+async function retranslatePopup(targetLanguage: string, source: string) {
+  const text = sourceText;
+  if (!text) return;
+  currentResult = null;
+  currentTargetLanguage = targetLanguage;
+  showLoading(`正在翻译为${popupTargetLanguageLabel(targetLanguage)}…`, source);
+  try {
+    const result = await window.lingua.translate(text, { targetLanguage });
+    if (sourceText !== text || currentTargetLanguage !== targetLanguage) return;
+    renderResult(result, source);
+    if (result.needsEnrichment) {
+      void enrichPopupResult(text, result, source, targetLanguage);
+    }
+  } catch (error) {
+    if (sourceText !== text || currentTargetLanguage !== targetLanguage) return;
+    showError(error instanceof Error ? error.message : String(error), source);
+  }
 }
 
 async function enrichPopupResult(
   text: string,
   coreResult: TranslationResult,
-  source: string
+  source: string,
+  targetLanguage = currentTargetLanguage
 ) {
   try {
     const enrichment = await window.lingua.enrichTranslation(
       text,
-      coreResult.translation
+      coreResult.translation,
+      { targetLanguage }
     );
     if (sourceText !== text || currentResult !== coreResult) return;
     renderResult(
@@ -319,9 +385,11 @@ window.addEventListener("keydown", (event) => {
 
 async function initialize() {
   const settings = await window.lingua.getSettings();
+  currentTargetLanguage = normalizedTargetLanguage(settings.targetLanguage);
   providerName =
     {
       ollama: "Ollama",
+      google: "Google 翻译",
       codex: "Codex",
       openai: "OpenAI",
       compatible: "兼容接口"

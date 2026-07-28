@@ -31,8 +31,15 @@ test("Mambo synthesis sends Chinese API v2 payload and accepts WAV", async () =>
   }
   const originalFetch = global.fetch;
   let payload;
+  let stopped = false;
   global.fetch = async (url, init = {}) => {
-    if (String(url).endsWith("/control")) return { status: 400 };
+    if (String(url).includes("/control?command=exit")) {
+      stopped = true;
+      return { status: 200 };
+    }
+    if (String(url).endsWith("/control")) {
+      return { status: stopped ? 503 : 400 };
+    }
     payload = JSON.parse(init.body);
     const wav = Buffer.alloc(64);
     wav.write("RIFF");
@@ -56,5 +63,30 @@ test("Mambo synthesis sends Chinese API v2 payload and accepts WAV", async () =>
   } finally {
     global.fetch = originalFetch;
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("remote Mac mini speech uses the lightweight companion service", async () => {
+  const originalFetch = global.fetch;
+  let requestedUrl;
+  global.fetch = async (url) => {
+    requestedUrl = String(url);
+    const wav = Buffer.alloc(64);
+    wav.write("RIFF");
+    return {
+      ok: true,
+      headers: { get: () => "audio/wav" },
+      arrayBuffer: async () =>
+        wav.buffer.slice(wav.byteOffset, wav.byteOffset + wav.byteLength)
+    };
+  };
+  try {
+    const result = await synthesizeMambo("你好", {
+      macMiniServiceUrl: "http://192.168.1.9:19876"
+    });
+    assert.equal(requestedUrl, "http://192.168.1.9:19876/api/speech");
+    assert.equal(result.audio.subarray(0, 4).toString("ascii"), "RIFF");
+  } finally {
+    global.fetch = originalFetch;
   }
 });

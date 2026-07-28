@@ -6,6 +6,7 @@ const {
   extractResponseText,
   isLikelyTechnicalText,
   isSingleEnglishWord,
+  listOllamaModels,
   localEnglishIpa,
   normalizeBaseUrl,
   parseTranslationResult,
@@ -14,6 +15,46 @@ const {
 
 test("normalizes provider URLs", () => {
   assert.equal(normalizeBaseUrl(" http://localhost:11434/// "), "http://localhost:11434");
+});
+
+test("lists installed Ollama models with dropdown metadata", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    text: async () =>
+      JSON.stringify({
+        models: [
+          {
+            name: "translategemma:4b",
+            size: 3210000000,
+            details: {
+              parameter_size: "4.3B",
+              quantization_level: "Q4_K_M",
+              family: "gemma3"
+            }
+          }
+        ]
+      })
+  });
+  try {
+    assert.deepEqual(
+      await listOllamaModels({
+        ollamaUrl: "http://127.0.0.1:11434",
+        ollamaModel: "qwen3:8b"
+      }),
+      [
+        {
+          name: "translategemma:4b",
+          size: 3210000000,
+          parameterSize: "4.3B",
+          quantization: "Q4_K_M",
+          family: "gemma3"
+        }
+      ]
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 
 test("extracts Responses API text", () => {
@@ -225,6 +266,72 @@ test("Ollama short translation disables thinking and keeps the model warm", asyn
     assert.equal(requestBody.keep_alive, "30m");
     assert.equal(requestBody.options.num_predict, 240);
     assert.equal(requestBody.options.num_ctx, 2048);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("TranslateGemma handles the core translation while Qwen remains separate", async () => {
+  const originalFetch = global.fetch;
+  let requestBody;
+  global.fetch = async (_url, init) => {
+    requestBody = JSON.parse(init.body);
+    return {
+      ok: true,
+      text: async () =>
+        JSON.stringify({ message: { content: "事件循环调度回调。" } })
+    };
+  };
+  try {
+    const result = await translateText("The event loop schedules callbacks.", {
+      provider: "ollama",
+      sourceLanguage: "en",
+      targetLanguage: "zh-CN",
+      ollamaUrl: "http://127.0.0.1:11434",
+      ollamaModel: "qwen3:8b",
+      ollamaTranslationModel: "translategemma:4b",
+      useTranslateGemma: true
+    });
+    assert.equal(result.translation, "事件循环调度回调。");
+    assert.equal(requestBody.model, "translategemma:4b");
+    assert.match(requestBody.messages[0].content, /English \(en\) to Chinese \(Simplified\) \(zh-Hans\)/);
+    assert.equal(result.needsEnrichment, true);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("Google Cloud Translation uses the official v2 endpoint", async () => {
+  const originalFetch = global.fetch;
+  let requestedUrl;
+  global.fetch = async (url) => {
+    requestedUrl = String(url);
+    return {
+      ok: true,
+      text: async () =>
+        JSON.stringify({
+          data: {
+            translations: [
+              {
+                translatedText: "你好 &amp; 欢迎",
+                detectedSourceLanguage: "en"
+              }
+            ]
+          }
+        })
+    };
+  };
+  try {
+    const result = await translateText("Hello & welcome", {
+      provider: "google",
+      sourceLanguage: "auto",
+      targetLanguage: "zh-CN",
+      ollamaUrl: "http://127.0.0.1:11434",
+      ollamaModel: "qwen3:8b"
+    }, "google-key");
+    assert.match(requestedUrl, /translation\.googleapis\.com/);
+    assert.equal(result.translation, "你好 & 欢迎");
+    assert.equal(result.sourceLanguage, "en");
   } finally {
     global.fetch = originalFetch;
   }

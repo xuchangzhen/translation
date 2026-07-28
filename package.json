@@ -1,6 +1,6 @@
 {
   "name": "linguabridge",
-  "version": "0.4.8",
+  "version": "0.5.1",
   "private": true,
   "description": "跨平台全局划词与截图翻译工具",
   "main": "src/main.cjs",
@@ -12,13 +12,14 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.cjs",
     "build:renderer": "vite build",
-    "build": "pnpm typecheck && pnpm test && pnpm build:renderer && electron-builder",
-    "build:mac": "pnpm typecheck && pnpm test && pnpm build:renderer && electron-builder --mac --arm64",
-    "build:win": "pnpm typecheck && pnpm test && pnpm build:renderer && electron-builder --win"
+    "build": "pnpm typecheck && pnpm test && pnpm build:renderer && electron-builder --publish never",
+    "build:mac": "pnpm typecheck && pnpm test && pnpm build:renderer && electron-builder --mac --arm64 --publish never",
+    "build:win": "pnpm typecheck && pnpm test && pnpm build:renderer && electron-builder --win --publish never"
   },
   "dependencies": {
     "@fontsource-variable/noto-sans-sc": "5.3.0",
     "@fontsource-variable/source-sans-3": "5.3.0",
+    "electron-updater": "^6.8.9",
     "phonemize": "2.0.0",
     "tesseract.js": "^6.0.1",
     "uiohook-napi": "1.5.5"
@@ -54,9 +55,18 @@
     "directories": {
       "output": "release"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "xuchangzhen",
+        "repo": "translation"
+      }
+    ],
+    "generateUpdatesFilesForAllChannels": true,
     "icon": "build/icon.png",
     "mac": {
       "category": "public.app-category.productivity",
+      "artifactName": "linguabridge-${version}-${arch}-mac.${ext}",
       "target": [
         "dmg",
         "zip"
@@ -83,9 +93,13 @@
       ]
     },
     "nsis": {
+      "artifactName": "linguabridge-setup-${version}-${arch}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true
+    },
+    "portable": {
+      "artifactName": "linguabridge-portable-${version}-${arch}.${ext}"
     }
   }
 }

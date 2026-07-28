@@ -6,6 +6,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: 构建 ${{ matrix.os }} 安装包
@@ -14,11 +17,17 @@ jobs:
         include:
           - os: macos-14
             command: build:mac
-            artifact: release/*.dmg
+            artifact: |
+              release/*.dmg
+              release/*.zip
+              release/*.yml
+              release/*.blockmap
           - os: windows-latest
             command: build:win
             artifact: |
               release/*.exe
+              release/*.yml
+              release/*.blockmap
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -38,9 +47,30 @@ jobs:
       - name: 检查并构建安装包
         run: pnpm run ${{ matrix.command }}
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
       - name: 保存安装包
         uses: actions/upload-artifact@v4
         with:
           name: 翻译-${{ runner.os }}
           path: ${{ matrix.artifact }}
+
+  release:
+    name: 发布应用内更新
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载所有平台安装包
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true

@@ -85,6 +85,29 @@ function normalizeBaseUrl(value) {
   return String(value || "").trim().replace(/\/+$/, "");
 }
 
+function isLocalHostname(hostname) {
+  return ["127.0.0.1", "localhost", "::1"].includes(
+    String(hostname || "").toLowerCase()
+  );
+}
+
+function ollamaBaseUrls(settings) {
+  const configured = normalizeBaseUrl(settings.ollamaUrl);
+  const candidates = [configured];
+  try {
+    const url = new URL(configured);
+    if (
+      !isLocalHostname(url.hostname) &&
+      !(url.port === "19876" && url.pathname.startsWith("/ollama"))
+    ) {
+      candidates.push(`${url.protocol}//${url.hostname}:19876/ollama`);
+    }
+  } catch {
+    // The configured value will produce the normal actionable connection error.
+  }
+  return [...new Set(candidates.filter(Boolean))];
+}
+
 function stripCodeFence(value) {
   return String(value || "")
     .trim()
@@ -209,6 +232,45 @@ function isLikelyTechnicalText(text) {
   );
 }
 
+function detectSourceLanguage(text, configured = "auto") {
+  if (configured && configured !== "auto") return configured;
+  const value = String(text || "");
+  if (/[\u3040-\u30ff]/.test(value)) return "ja";
+  if (/[\uac00-\ud7af]/.test(value)) return "ko";
+  if (/[\u3400-\u9fff]/.test(value)) return "zh-CN";
+  if (/[\u0400-\u04ff]/.test(value)) return "ru";
+  return "en";
+}
+
+function translateGemmaLanguage(language) {
+  const code = language === "auto" ? "en" : language;
+  return {
+    "zh-CN": { name: "Chinese (Simplified)", code: "zh-Hans" },
+    "zh-TW": { name: "Chinese (Traditional)", code: "zh-Hant" },
+    en: { name: "English", code: "en" },
+    ja: { name: "Japanese", code: "ja" },
+    ko: { name: "Korean", code: "ko" },
+    de: { name: "German", code: "de" },
+    fr: { name: "French", code: "fr" },
+    es: { name: "Spanish", code: "es" },
+    ru: { name: "Russian", code: "ru" }
+  }[code] || { name: LANGUAGE_NAMES[code] || code, code };
+}
+
+function buildTranslateGemmaPrompt(text, settings) {
+  const source = translateGemmaLanguage(
+    detectSourceLanguage(text, settings.sourceLanguage)
+  );
+  const target = translateGemmaLanguage(settings.targetLanguage);
+  return [
+    `You are a professional ${source.name} (${source.code}) to ${target.name} (${target.code}) translator. Your goal is to accurately convey the meaning and nuances of the original ${source.name} text while adhering to ${target.name} grammar, vocabulary, and cultural sensitivities.`,
+    `Produce only the ${target.name} translation, without any additional explanations or commentary. Please translate the following ${source.name} text into ${target.name}:`,
+    "",
+    "",
+    text
+  ].join("\n");
+}
+
 function buildMessages(text, options) {
   const source = LANGUAGE_NAMES[options.sourceLanguage] || options.sourceLanguage;
   const target = LANGUAGE_NAMES[options.targetLanguage] || options.targetLanguage;
@@ -281,12 +343,34 @@ async function fetchJson(url, init, timeoutMs = 60000) {
   }
 }
 
-async function translateWithOllama(text, settings) {
+async function fetchOllamaJson(settings, endpoint, init, timeoutMs) {
+  let lastError;
+  for (const baseUrl of ollamaBaseUrls(settings)) {
+    try {
+      return await fetchJson(`${baseUrl}${endpoint}`, init, timeoutMs);
+    } catch (error) {
+      lastError = error;
+      const message = String(error?.message || error || "");
+      if (
+        !(
+          error instanceof TypeError ||
+          /fetch failed|ECONNREFUSED|Failed to connect|ENOTFOUND/i.test(message)
+        )
+      ) {
+        throw error;
+      }
+    }
+  }
+  throw lastError;
+}
+
+async function translateWithQwenOllama(text, settings) {
   const messages = buildMessages(text, settings);
   let payload;
   try {
-    payload = await fetchJson(
-      `${normalizeBaseUrl(settings.ollamaUrl)}/api/chat`,
+    payload = await fetchOllamaJson(
+      settings,
+      "/api/chat",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -316,11 +400,72 @@ async function translateWithOllama(text, settings) {
   );
 }
 
+async function translateWithTranslateGemma(text, settings) {
+  const sourceLanguage = detectSourceLanguage(text, settings.sourceLanguage);
+  const payload = await fetchOllamaJson(
+    settings,
+    "/api/chat",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: settings.ollamaTranslationModel || "translategemma:4b",
+        messages: [
+          {
+            role: "user",
+            content: buildTranslateGemmaPrompt(text, settings)
+          }
+        ],
+        stream: false,
+        think: false,
+        keep_alive: "30m",
+        options: {
+          temperature: 0,
+          num_ctx: text.length <= 1000 ? 2048 : 4096,
+          num_predict: text.length <= 500 ? 700 : 2400
+        }
+      })
+    },
+    120000
+  );
+  const translation = stripCodeFence(extractResponseText(payload))
+    .replace(/^["“]|["”]$/g, "")
+    .trim();
+  if (!translation) throw new Error("TranslateGemma 没有返回译文");
+  return {
+    ...RESULT_SHAPE,
+    sourceLanguage,
+    targetLanguage: settings.targetLanguage,
+    translation,
+    phonetic:
+      sourceLanguage === "en" && isSingleEnglishWord(text)
+        ? localEnglishIpa(text)
+        : "",
+    pronunciationText: text,
+    isTechnical: isLikelyTechnicalText(text) || isLikelyTechnicalText(translation)
+  };
+}
+
+async function translateWithOllama(text, settings) {
+  if (settings.useTranslateGemma === true) {
+    try {
+      return await translateWithTranslateGemma(text, settings);
+    } catch (error) {
+      console.warn(
+        `TranslateGemma unavailable, falling back to ${settings.ollamaModel}:`,
+        error
+      );
+    }
+  }
+  return translateWithQwenOllama(text, settings);
+}
+
 async function enrichWithOllama(text, translation, settings) {
   let payload;
   try {
-    payload = await fetchJson(
-      `${normalizeBaseUrl(settings.ollamaUrl)}/api/chat`,
+    payload = await fetchOllamaJson(
+      settings,
+      "/api/chat",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -368,20 +513,34 @@ function enhanceOllamaError(error, settings) {
   return error instanceof Error ? error : new Error(message);
 }
 
-async function inspectOllama(settings) {
+async function listOllamaModels(settings) {
   let payload;
   try {
-    payload = await fetchJson(
-      `${normalizeBaseUrl(settings.ollamaUrl)}/api/tags`,
+    payload = await fetchOllamaJson(
+      settings,
+      "/api/tags",
       { method: "GET" },
       5000
     );
   } catch (error) {
     throw enhanceOllamaError(error, settings);
   }
-  const models = Array.isArray(payload?.models)
-    ? payload.models.map((model) => String(model?.name || model?.model || ""))
+  return Array.isArray(payload?.models)
+    ? payload.models
+        .map((model) => ({
+          name: String(model?.name || model?.model || ""),
+          size: Number(model?.size || 0),
+          parameterSize: String(model?.details?.parameter_size || ""),
+          quantization: String(model?.details?.quantization_level || ""),
+          family: String(model?.details?.family || "")
+        }))
+        .filter((model) => model.name)
     : [];
+}
+
+async function inspectOllama(settings) {
+  const catalog = await listOllamaModels(settings);
+  const models = catalog.map((model) => model.name);
   const requested = String(settings.ollamaModel || "");
   const requestedBase = requested.split(":")[0];
   const hasModel = models.some(
@@ -400,13 +559,18 @@ async function inspectOllama(settings) {
 
 async function warmOllama(settings) {
   if (settings.provider !== "ollama") return false;
-  await fetchJson(
-    `${normalizeBaseUrl(settings.ollamaUrl)}/api/generate`,
+  const model =
+    settings.useTranslateGemma === true
+      ? settings.ollamaTranslationModel || "translategemma:4b"
+      : settings.ollamaModel;
+  await fetchOllamaJson(
+    settings,
+    "/api/generate",
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: settings.ollamaModel,
+        model,
         prompt: "",
         stream: false,
         keep_alive: "30m",
@@ -475,6 +639,58 @@ async function enrichWithOpenAI(text, translation, settings, apiKey) {
     }
   );
   return parseEnrichmentResult(extractResponseText(payload));
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || "")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#39;", "'")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
+}
+
+async function translateWithGoogle(text, settings, apiKey) {
+  if (!apiKey) throw new Error("请先在设置中填写 Google Cloud API Key");
+  const body = {
+    q: text,
+    target: settings.targetLanguage,
+    format: "text",
+    model: "nmt"
+  };
+  if (settings.sourceLanguage && settings.sourceLanguage !== "auto") {
+    body.source = settings.sourceLanguage;
+  }
+  const payload = await fetchJson(
+    `https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    },
+    30000
+  );
+  const item = payload?.data?.translations?.[0];
+  const translation = decodeHtmlEntities(item?.translatedText).trim();
+  if (!translation) throw new Error("Google Cloud Translation 没有返回译文");
+  const sourceLanguage = detectSourceLanguage(
+    text,
+    settings.sourceLanguage === "auto"
+      ? item?.detectedSourceLanguage || "auto"
+      : settings.sourceLanguage
+  );
+  return {
+    ...RESULT_SHAPE,
+    sourceLanguage,
+    targetLanguage: settings.targetLanguage,
+    translation,
+    phonetic:
+      sourceLanguage === "en" && isSingleEnglishWord(text)
+        ? localEnglishIpa(text)
+        : "",
+    pronunciationText: text,
+    isTechnical: isLikelyTechnicalText(text) || isLikelyTechnicalText(translation)
+  };
 }
 
 async function translateWithCompatible(text, settings, apiKey) {
@@ -728,6 +944,9 @@ async function translateText(text, settings, apiKey = "") {
     case "openai":
       result = await translateWithOpenAI(normalizedText, settings, apiKey);
       break;
+    case "google":
+      result = await translateWithGoogle(normalizedText, settings, apiKey);
+      break;
     case "compatible":
       result = await translateWithCompatible(normalizedText, settings, apiKey);
       break;
@@ -771,6 +990,8 @@ async function enrichTranslation(text, translation, settings, apiKey = "") {
       );
     case "ollama":
       return enrichWithOllama(normalizedText, normalizedTranslation, settings);
+    case "google":
+      return enrichWithOllama(normalizedText, normalizedTranslation, settings);
     default:
       throw new Error(`不支持的翻译服务：${settings.provider}`);
   }
@@ -782,12 +1003,26 @@ async function testProvider(settings, apiKey = "") {
     return codexLoginStatus(settings);
   }
   if (settings.provider === "ollama") {
-    await inspectOllama(settings);
+    const models = await inspectOllama(settings);
+    const translationModel =
+      settings.ollamaTranslationModel || "translategemma:4b";
+    const translationModelBase = translationModel.split(":")[0];
+    const hasTranslateGemma = models.some(
+      (model) =>
+        model === translationModel ||
+        model.split(":")[0] === translationModelBase
+    );
     return {
       ok: true,
       latencyMs: Date.now() - startedAt,
-      model: settings.ollamaModel,
-      note: "服务与模型均可用；应用会在后台保持模型常驻"
+      model:
+        settings.useTranslateGemma === true && hasTranslateGemma
+          ? `${translationModel} + ${settings.ollamaModel}`
+          : settings.ollamaModel,
+      note:
+        settings.useTranslateGemma === true && !hasTranslateGemma
+          ? `Qwen 可用；未安装 ${translationModel}，主翻译会自动回退 Qwen`
+          : "主译文与技术解析模型均可用"
     };
   }
   const result = await translateText("Hello, API gateway.", settings, apiKey);
@@ -797,7 +1032,9 @@ async function testProvider(settings, apiKey = "") {
     model:
       settings.provider === "ollama"
         ? settings.ollamaModel
-        : settings.provider === "openai"
+        : settings.provider === "google"
+          ? "Google Cloud Translation"
+          : settings.provider === "openai"
           ? settings.openaiModel
           : settings.compatibleModel
   };
@@ -814,6 +1051,7 @@ module.exports = {
   enrichTranslation,
   isLikelyTechnicalText,
   isSingleEnglishWord,
+  listOllamaModels,
   localEnglishIpa,
   normalizeBaseUrl,
   parseTranslationResult,

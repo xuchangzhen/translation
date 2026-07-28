@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld("lingua", {
   codexLogin: (settings = {}) => ipcRenderer.invoke("codex:login", settings),
   codexStatus: (settings = {}) => ipcRenderer.invoke("codex:status", settings),
   codexModels: (settings = {}) => ipcRenderer.invoke("codex:models", settings),
+  ollamaModels: (settings = {}) => ipcRenderer.invoke("ollama:models", settings),
   synthesizeSpeech: (text, language) =>
     ipcRenderer.invoke("speech:synthesize", { text, language }),
   prepareSpeech: (text, language) =>
@@ -28,6 +29,15 @@ contextBridge.exposeInMainWorld("lingua", {
     ipcRenderer.invoke("system:open-permission-settings", kind),
   openOllamaDownload: () => ipcRenderer.invoke("system:open-ollama-download"),
   getAppInfo: () => ipcRenderer.invoke("app:info"),
+  getUpdateStatus: () => ipcRenderer.invoke("update:get-status"),
+  checkForUpdates: () => ipcRenderer.invoke("update:check"),
+  downloadUpdate: () => ipcRenderer.invoke("update:download"),
+  installUpdate: () => ipcRenderer.invoke("update:install"),
+  onUpdateStatus: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("update:status", listener);
+    return () => ipcRenderer.removeListener("update:status", listener);
+  },
   onTranslationStart: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("translation:start", listener);

@@ -22,8 +22,10 @@ let queuedRealtime = false;
 let lastTranslatedText = "";
 let codexCatalog: CodexModel[] = [];
 let codexCatalogLoading = false;
-let speechPreparationTimer: number | undefined;
+let ollamaCatalog: OllamaModel[] = [];
+let ollamaCatalogLoading = false;
 let currentPlatform = "";
+let appVersion = "";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 
@@ -48,6 +50,34 @@ function codexModelOptions(selected: string) {
     options.splice(
       1,
       0,
+      `<option value="${escapeAttribute(selected)}" selected>${escapeAttribute(selected)}（当前保存）</option>`
+    );
+  }
+  return options.join("");
+}
+
+function ollamaModelLabel(model: OllamaModel) {
+  const details = [model.parameterSize, model.quantization]
+    .filter(Boolean)
+    .join(" · ");
+  return details ? `${model.name} · ${details}` : model.name;
+}
+
+function ollamaModelOptions(selected: string, purpose: "translation" | "technical") {
+  const sorted = [...ollamaCatalog].sort((left, right) => {
+    const preferred = (name: string) =>
+      purpose === "translation"
+        ? /translate|gemma/i.test(name)
+        : /qwen|coder|code/i.test(name);
+    return Number(preferred(right.name)) - Number(preferred(left.name)) ||
+      left.name.localeCompare(right.name);
+  });
+  const options = sorted.map(
+    (model) =>
+      `<option value="${escapeAttribute(model.name)}" ${model.name === selected ? "selected" : ""}>${escapeAttribute(ollamaModelLabel(model))}</option>`
+  );
+  if (selected && !sorted.some((model) => model.name === selected)) {
+    options.unshift(
       `<option value="${escapeAttribute(selected)}" selected>${escapeAttribute(selected)}（当前保存）</option>`
     );
   }
@@ -150,12 +180,15 @@ function renderShell() {
   bindEvents();
   refreshProviderFields();
   refreshSpeechFields();
+  void window.lingua.getUpdateStatus().then(renderUpdateStatus);
   if (settings.provider === "codex") void loadCodexModels();
+  if (settings.provider === "ollama") void loadOllamaModels();
 }
 
 function providerLabel(provider: Provider) {
   return {
     ollama: "Mac mini · Ollama",
+    google: "Google 翻译",
     openai: "OpenAI API",
     compatible: "OpenAI 兼容服务",
     codex: "ChatGPT · Codex"
@@ -184,6 +217,7 @@ function settingsMarkup() {
             <span>服务类型</span>
             <select id="setting-provider">
               <option value="ollama" ${settings.provider === "ollama" ? "selected" : ""}>Ollama（推荐本地/局域网）</option>
+              <option value="google" ${settings.provider === "google" ? "selected" : ""}>Google Cloud Translation</option>
               <option value="codex" ${settings.provider === "codex" ? "selected" : ""}>ChatGPT / Codex 额度（实验）</option>
               <option value="openai" ${settings.provider === "openai" ? "selected" : ""}>OpenAI Responses API</option>
               <option value="compatible" ${settings.provider === "compatible" ? "selected" : ""}>OpenAI 兼容接口（LM Studio 等）</option>
@@ -191,15 +225,38 @@ function settingsMarkup() {
           </label>
           <div class="provider-fields span-2" data-provider="ollama">
             <label class="field"><span>Ollama 地址</span><input id="setting-ollama-url" value="${escapeAttribute(settings.ollamaUrl)}" placeholder="http://192.168.1.10:11434"></label>
-            <label class="field"><span>模型</span><input id="setting-ollama-model" value="${escapeAttribute(settings.ollamaModel)}" placeholder="qwen3:8b"></label>
+            <label class="field">
+              <span>技术解析模型</span>
+              <select id="setting-ollama-model">${ollamaModelOptions(settings.ollamaModel, "technical")}</select>
+            </label>
+            <label class="field">
+              <span>主翻译模型</span>
+              <div class="input-action">
+                <select id="setting-ollama-translation-model">${ollamaModelOptions(settings.ollamaTranslationModel, "translation")}</select>
+                <button id="refresh-ollama-models" class="text-button" type="button">刷新列表</button>
+              </div>
+              <small id="ollama-model-status" class="field-help">${ollamaCatalog.length ? `已读取 ${ollamaCatalog.length} 个已安装模型` : "将从当前 Ollama 服务读取已安装模型"}</small>
+            </label>
+            <label class="toggle-row">
+              <span><strong>TranslateGemma 主翻译</strong><small>专用模型负责译文；缺失或失败时自动回退 Qwen</small></span>
+              <input id="setting-use-translategemma" type="checkbox" ${settings.useTranslateGemma ? "checked" : ""}>
+            </label>
             <div class="ollama-setup span-2">
               <div>
-                <strong>本地模型需要单独运行 Ollama</strong>
-                <p>当前 Mac 使用本机地址；Windows 使用 Mac mini 算力时，请填写 Mac mini 的局域网 IP，不能填写 127.0.0.1。</p>
+                <strong>Mac mini 后台服务无需终端窗口</strong>
+                <p>Mac 版会静默启动 Ollama，并在 19876 端口提供局域网代理。Windows 可继续填写 Mac mini 的 11434 地址；连接失败时会自动尝试后台代理。</p>
               </div>
               <div class="ollama-setup-actions">
                 <button id="open-ollama-download" class="button subtle" type="button">下载 Ollama</button>
                 <button id="copy-ollama-command" class="text-button" type="button">复制模型安装命令</button>
+              </div>
+            </div>
+          </div>
+          <div class="provider-fields span-2" data-provider="google">
+            <div class="ollama-setup span-2">
+              <div>
+                <strong>Google Cloud Translation API</strong>
+                <p>适合追求低延迟和广泛语言覆盖的场景，需要 Google Cloud API Key，并会产生云端用量费用。技术术语解释仍由 Mac mini 的 Qwen 完成。</p>
               </div>
             </div>
           </div>
@@ -294,7 +351,7 @@ function settingsMarkup() {
       <section class="settings-section">
         <div class="section-heading">
           <span class="section-number">03</span>
-          <div><h2>语音朗读</h2><p>应用启动后会自动在后台运行并守护本机曼波服务。</p></div>
+          <div><h2>语音朗读</h2><p>点击中文朗读时才启动曼波，音频生成后立即关闭模型。</p></div>
         </div>
         <div class="setting-card">
           <label class="field span-2"><span>朗读引擎</span>
@@ -305,10 +362,10 @@ function settingsMarkup() {
           </label>
           <div id="mambo-settings" class="span-2 setting-subgrid">
             <label class="field"><span>MamboTTS 地址</span><input id="setting-mambo-url" value="${escapeAttribute(settings.mamboUrl)}"></label>
-            <label class="field"><span>本机模型目录</span><input id="setting-mambo-root" value="${escapeAttribute(settings.mamboRoot)}"></label>
+            <label class="field"><span>Mac mini 模型目录</span><input id="setting-mambo-root" value="${escapeAttribute(settings.mamboRoot)}"></label>
             <div class="settings-actions span-2">
               <button id="test-speech" class="button subtle" type="button">检查语音服务</button>
-              <span id="speech-test-result">服务随应用启动，关闭界面后仍会在后台运行</span>
+              <span id="speech-test-result">Windows 会根据 Ollama 地址自动使用 Mac mini 后台语音服务</span>
             </div>
           </div>
         </div>
@@ -317,6 +374,23 @@ function settingsMarkup() {
       <section class="settings-section">
         <div class="section-heading">
           <span class="section-number">04</span>
+          <div><h2>软件更新</h2><p>当前版本 v${escapeAttribute(appVersion || "0.0.0")}，可在应用内检查、下载并安装更新。</p></div>
+        </div>
+        <div class="setting-card">
+          <div class="update-row span-2">
+            <div>
+              <strong id="update-version">翻译 v${escapeAttribute(appVersion || "0.0.0")}</strong>
+              <span id="update-status">尚未检查更新</span>
+              <div class="update-progress"><i id="update-progress-bar"></i></div>
+            </div>
+            <button id="update-action" class="button subtle" type="button">检查更新</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <div class="section-heading">
+          <span class="section-number">05</span>
           <div><h2>系统权限</h2><p>macOS 首次使用需要手动授权。</p></div>
         </div>
         <div class="permission-grid">
@@ -384,10 +458,16 @@ function bindEvents() {
       if ((event.target as HTMLSelectElement).value === "codex") {
         void loadCodexModels();
       }
+      if ((event.target as HTMLSelectElement).value === "ollama") {
+        void loadOllamaModels();
+      }
     });
   document
     .querySelector("#refresh-codex-models")
     ?.addEventListener("click", () => void loadCodexModels(true));
+  document
+    .querySelector("#refresh-ollama-models")
+    ?.addEventListener("click", () => void loadOllamaModels(true));
   document
     .querySelector("#setting-speech-provider")
     ?.addEventListener("change", refreshSpeechFields);
@@ -408,13 +488,22 @@ function bindEvents() {
     ?.addEventListener("click", async () => {
       const model =
         document
-          .querySelector<HTMLInputElement>("#setting-ollama-model")
+          .querySelector<HTMLSelectElement>("#setting-ollama-model")
           ?.value.trim() || "qwen3:8b";
-      await window.lingua.copyText(`ollama pull ${model}`);
+      const translationModel =
+        document
+          .querySelector<HTMLSelectElement>("#setting-ollama-translation-model")
+          ?.value.trim() || "translategemma:4b";
+      await window.lingua.copyText(
+        `ollama pull ${model}\nollama pull ${translationModel}`
+      );
       const button =
         document.querySelector<HTMLButtonElement>("#copy-ollama-command");
       if (button) button.textContent = "命令已复制";
     });
+  document
+    .querySelector("#update-action")
+    ?.addEventListener("click", () => void runUpdateAction());
   document
     .querySelector("#codex-login")
     ?.addEventListener("click", () => void loginCodex());
@@ -478,6 +567,12 @@ function switchView(view: string) {
       (button as HTMLElement).dataset.view === view
     );
   });
+  if (view === "settings") {
+    const provider =
+      document.querySelector<HTMLSelectElement>("#setting-provider")?.value;
+    if (provider === "ollama") void loadOllamaModels();
+    if (provider === "codex") void loadCodexModels();
+  }
 }
 
 function refreshProviderFields() {
@@ -545,6 +640,69 @@ async function loadCodexModels(force = false) {
     status?.classList.add("error");
   } finally {
     codexCatalogLoading = false;
+    if (button) button.disabled = false;
+  }
+}
+
+function replaceOllamaModelOptions(
+  select: HTMLSelectElement | null,
+  catalog: OllamaModel[],
+  purpose: "translation" | "technical"
+) {
+  if (!select) return;
+  const selected = select.value;
+  const sorted = [...catalog].sort((left, right) => {
+    const preferred = (name: string) =>
+      purpose === "translation"
+        ? /translate|gemma/i.test(name)
+        : /qwen|coder|code/i.test(name);
+    return Number(preferred(right.name)) - Number(preferred(left.name)) ||
+      left.name.localeCompare(right.name);
+  });
+  select.replaceChildren();
+  sorted.forEach((model) => {
+    const option = document.createElement("option");
+    option.value = model.name;
+    option.textContent = ollamaModelLabel(model);
+    select.append(option);
+  });
+  if (selected && !catalog.some((model) => model.name === selected)) {
+    const saved = document.createElement("option");
+    saved.value = selected;
+    saved.textContent = `${selected}（当前保存）`;
+    select.prepend(saved);
+  }
+  select.value = selected || sorted[0]?.name || "";
+}
+
+async function loadOllamaModels(force = false) {
+  if (ollamaCatalogLoading || (ollamaCatalog.length && !force)) return;
+  const status = document.querySelector<HTMLElement>("#ollama-model-status");
+  const button =
+    document.querySelector<HTMLButtonElement>("#refresh-ollama-models");
+  const technical =
+    document.querySelector<HTMLSelectElement>("#setting-ollama-model");
+  const translation =
+    document.querySelector<HTMLSelectElement>("#setting-ollama-translation-model");
+  if (!technical || !translation) return;
+  ollamaCatalogLoading = true;
+  status?.classList.remove("error");
+  if (status) status.textContent = "正在读取 Ollama 已安装模型…";
+  if (button) button.disabled = true;
+  try {
+    ollamaCatalog = await window.lingua.ollamaModels(collectSettings());
+    replaceOllamaModelOptions(technical, ollamaCatalog, "technical");
+    replaceOllamaModelOptions(translation, ollamaCatalog, "translation");
+    if (status) {
+      status.textContent = ollamaCatalog.length
+        ? `已读取 ${ollamaCatalog.length} 个已安装模型`
+        : "Ollama 当前没有已安装模型";
+    }
+  } catch (error) {
+    if (status) status.textContent = humanizeError(error);
+    status?.classList.add("error");
+  } finally {
+    ollamaCatalogLoading = false;
     if (button) button.disabled = false;
   }
 }
@@ -757,12 +915,6 @@ function renderResult(result: TranslationResult) {
     () => speakText(result.translation, result.targetLanguage),
     true
   );
-  speakTranslation.addEventListener("pointerenter", () => {
-    void window.lingua.prepareSpeech(
-      result.translation,
-      result.targetLanguage
-    );
-  });
   actions.append(
     speakTranslation,
     actionButton("复制", "copy", async () => {
@@ -851,15 +1003,6 @@ function renderResult(result: TranslationResult) {
     container.append(resultSection("其他表达", result.alternatives.join(" · ")));
   }
   container.classList.remove("hidden");
-  window.clearTimeout(speechPreparationTimer);
-  if (/[\u3400-\u9fff]/.test(result.translation)) {
-    speechPreparationTimer = window.setTimeout(() => {
-      void window.lingua.prepareSpeech(
-        result.translation,
-        result.targetLanguage
-      );
-    }, 900);
-  }
 }
 
 function actionButton(
@@ -914,7 +1057,6 @@ function resultSection(titleText: string, bodyText: string) {
 function clearTranslation() {
   const source = document.querySelector<HTMLTextAreaElement>("#source-text")!;
   window.clearTimeout(realtimeTimer);
-  window.clearTimeout(speechPreparationTimer);
   source.value = "";
   lastResult = null;
   lastTranslatedText = "";
@@ -1094,7 +1236,14 @@ function collectSettings(): Partial<AppSettings> {
     ollamaUrl:
       document.querySelector<HTMLInputElement>("#setting-ollama-url")!.value.trim(),
     ollamaModel:
-      document.querySelector<HTMLInputElement>("#setting-ollama-model")!.value.trim(),
+      document.querySelector<HTMLSelectElement>("#setting-ollama-model")!.value.trim(),
+    ollamaTranslationModel:
+      document
+        .querySelector<HTMLSelectElement>("#setting-ollama-translation-model")!
+        .value.trim(),
+    useTranslateGemma:
+      document.querySelector<HTMLInputElement>("#setting-use-translategemma")!
+        .checked,
     openaiBaseUrl:
       document.querySelector<HTMLInputElement>("#setting-openai-url")!.value.trim(),
     openaiModel:
@@ -1213,6 +1362,50 @@ async function testConnection() {
   }
 }
 
+function renderUpdateStatus(update: UpdateStatus) {
+  const status = document.querySelector<HTMLElement>("#update-status");
+  const bar = document.querySelector<HTMLElement>("#update-progress-bar");
+  const button = document.querySelector<HTMLButtonElement>("#update-action");
+  if (!status || !bar || !button) return;
+  status.textContent = update.message;
+  status.classList.toggle("error", update.status === "error");
+  bar.style.width = `${Math.max(0, Math.min(100, update.progress || 0))}%`;
+  button.disabled =
+    update.status === "checking" || update.status === "downloading";
+  const buttonLabels: Partial<Record<UpdateStatus["status"], string>> = {
+      available: "下载更新",
+      downloaded: "立即安装",
+      checking: "检查中…",
+      downloading: `下载中 ${update.progress || 0}%`,
+      development: "开发版本",
+      current: "再次检查",
+      error: "重新检查"
+  };
+  button.textContent = buttonLabels[update.status] || "检查更新";
+}
+
+async function runUpdateAction() {
+  const current = await window.lingua.getUpdateStatus();
+  try {
+    if (current.status === "available") {
+      await window.lingua.downloadUpdate();
+      return;
+    }
+    if (current.status === "downloaded") {
+      await window.lingua.installUpdate();
+      return;
+    }
+    await window.lingua.checkForUpdates();
+  } catch (error) {
+    renderUpdateStatus({
+      status: "error",
+      message: humanizeError(error),
+      progress: 0,
+      version: ""
+    });
+  }
+}
+
 async function initialize() {
   const [storedSettings, appInfo] = await Promise.all([
     window.lingua.getSettings(),
@@ -1220,7 +1413,10 @@ async function initialize() {
   ]);
   settings = storedSettings;
   currentPlatform = appInfo.platform;
+  appVersion = appInfo.version;
   renderShell();
+  window.lingua.onUpdateStatus(renderUpdateStatus);
+  void window.lingua.getUpdateStatus().then(renderUpdateStatus);
   window.lingua.onTranslationStart(({ text, source }) => {
     switchView("translate");
     const sourceField =

@@ -1,6 +1,7 @@
 const path = require("node:path");
 const fs = require("node:fs");
 const { execFile } = require("node:child_process");
+const { autoUpdater } = require("electron-updater");
 const {
   app,
   BrowserWindow,
@@ -21,15 +22,28 @@ const {
   codexLoginStatus,
   codexModels,
   enrichTranslation,
+  listOllamaModels,
   testProvider,
   translateText,
   warmOllama
 } = require("./lib/translator.cjs");
+const { updateErrorMessage } = require("./lib/updater.cjs");
 const {
   ensureMamboRunning,
   mamboHealth,
+  stopMambo,
   synthesizeMambo
 } = require("./lib/speech.cjs");
+const {
+  startMacService,
+  stopMacService
+} = require("./lib/mac-service.cjs");
+const {
+  ensureLocalOllamaRunning
+} = require("./lib/ollama-service.cjs");
+const {
+  popupBoundsNearPoint
+} = require("./lib/windowing.cjs");
 
 let mainWindow;
 let popupWindow;
@@ -38,7 +52,6 @@ let tray;
 let store;
 let isQuitting = false;
 let suppressMainWindowActivation = false;
-let mamboHealthTimer = null;
 let startupShortcutNotice = "";
 let overlayWindows = [];
 let overlayContexts = new Map();
@@ -55,6 +68,12 @@ const translationCache = new Map();
 const enrichmentCache = new Map();
 const speechCache = new Map();
 const speechInFlight = new Map();
+let updateState = {
+  status: "idle",
+  message: "尚未检查更新",
+  progress: 0,
+  version: ""
+};
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 
@@ -90,25 +109,6 @@ function repairStoredShortcuts() {
   startupShortcutNotice = repaired.join("；");
 }
 
-function maintainMamboService() {
-  if (
-    process.platform !== "darwin" ||
-    !store ||
-    store.data.speechProvider !== "mambo"
-  ) {
-    return;
-  }
-  void ensureMamboRunning(store.data).catch((error) => {
-    console.error("Unable to keep Mambo speech service running:", error);
-  });
-}
-
-function startMamboBackgroundService() {
-  maintainMamboService();
-  if (mamboHealthTimer) return;
-  mamboHealthTimer = setInterval(maintainMamboService, 45_000);
-}
-
 function cacheRead(cache, key) {
   if (!cache.has(key)) return null;
   const value = cache.get(key);
@@ -127,7 +127,7 @@ function cacheWrite(cache, key, value, maximum) {
 
 function activeModel(settings) {
   return {
-    ollama: `${settings.ollamaUrl}|${settings.ollamaModel}`,
+    ollama: `${settings.ollamaUrl}|${settings.ollamaTranslationModel}|${settings.ollamaModel}|${settings.useTranslateGemma}`,
     openai: `${settings.openaiBaseUrl}|${settings.openaiModel}`,
     compatible: `${settings.compatibleBaseUrl}|${settings.compatibleModel}`,
     codex: `${settings.codexPath}|${settings.codexModel}`
@@ -149,6 +149,7 @@ function speechCacheKey(text, settings) {
     settings.speechProvider,
     settings.mamboUrl,
     settings.mamboRoot,
+    settings.ollamaUrl,
     String(text || "").trim()
   ].join("\u241f");
 }
@@ -259,6 +260,11 @@ function createMainWindow() {
           })()
         `);
       }
+      const smokeDelay = Math.max(
+        500,
+        Number(process.env.LINGUABRIDGE_SMOKE_DELAY_MS) ||
+          (process.env.LINGUABRIDGE_SMOKE_AUTOTYPE ? 2200 : 1200)
+      );
       setTimeout(async () => {
         const image = await mainWindow.capturePage();
         fs.writeFileSync(
@@ -267,7 +273,7 @@ function createMainWindow() {
         );
         isQuitting = true;
         app.quit();
-      }, process.env.LINGUABRIDGE_SMOKE_AUTOTYPE ? 2200 : 1200);
+      }, smokeDelay);
     });
   }
   mainWindow.on("close", (event) => {
@@ -290,16 +296,7 @@ function showMainWindow() {
 function popupBounds(width, height) {
   const cursor = screen.getCursorScreenPoint();
   const display = screen.getDisplayNearestPoint(cursor);
-  const area = display.workArea;
-  const preferredX = cursor.x + 18;
-  const preferredY = cursor.y + 18;
-  return {
-    x: Math.max(area.x + 10, Math.min(preferredX, area.x + area.width - width - 10)),
-    y: Math.max(
-      area.y + 10,
-      Math.min(preferredY, area.y + area.height - height - 10)
-    )
-  };
+  return popupBoundsNearPoint(cursor, display.workArea, width, height);
 }
 
 function showTranslationPopup(payload) {
@@ -352,6 +349,27 @@ function showTranslationPopup(payload) {
     });
     popupWindow.webContents.once("did-finish-load", () => {
       if (process.env.LINGUABRIDGE_POPUP_SCREENSHOT_PATH) {
+        if (process.env.LINGUABRIDGE_SMOKE_POPUP_TARGET) {
+          const target = JSON.stringify(
+            process.env.LINGUABRIDGE_SMOKE_POPUP_TARGET
+          );
+          setTimeout(() => {
+            void popupWindow?.webContents.executeJavaScript(`
+              (() => {
+                const select = document.querySelector("#popup-target-language");
+                if (!select) return false;
+                select.value = ${target};
+                select.dispatchEvent(new Event("change", { bubbles: true }));
+                return true;
+              })()
+            `);
+          }, 500);
+        }
+        const popupSmokeDelay = Math.max(
+          1000,
+          Number(process.env.LINGUABRIDGE_SMOKE_DELAY_MS) ||
+            (process.env.LINGUABRIDGE_SMOKE_POPUP_TARGET ? 12000 : 1200)
+        );
         setTimeout(async () => {
           const image = await popupWindow.capturePage();
           fs.writeFileSync(
@@ -360,7 +378,7 @@ function showTranslationPopup(payload) {
           );
           isQuitting = true;
           app.quit();
-        }, 1200);
+        }, popupSmokeDelay);
       }
     });
     popupWindow.on("closed", () => {
@@ -450,6 +468,80 @@ function sendStatus(message, progress) {
     mainWindow.webContents.send("translation:status", { message, progress });
   }
   sendPopupStatus(message, progress);
+}
+
+function setUpdateState(patch) {
+  updateState = { ...updateState, ...patch };
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("update:status", updateState);
+  }
+}
+
+function applyUpdateError(error) {
+  const friendly = updateErrorMessage(error, app.getVersion());
+  setUpdateState({
+    ...friendly,
+    progress: 0,
+    version: app.getVersion()
+  });
+}
+
+function setupAutoUpdater() {
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on("checking-for-update", () => {
+    setUpdateState({
+      status: "checking",
+      message: "正在检查新版本…",
+      progress: 0
+    });
+  });
+  autoUpdater.on("update-available", (info) => {
+    setUpdateState({
+      status: "available",
+      message: `发现新版本 v${info.version}`,
+      version: info.version,
+      progress: 0
+    });
+  });
+  autoUpdater.on("update-not-available", () => {
+    setUpdateState({
+      status: "current",
+      message: "当前已是最新版本",
+      version: app.getVersion(),
+      progress: 0
+    });
+  });
+  autoUpdater.on("download-progress", (progress) => {
+    const percent = Math.max(0, Math.min(100, Math.round(progress.percent || 0)));
+    setUpdateState({
+      status: "downloading",
+      message: `正在下载更新 ${percent}%`,
+      progress: percent
+    });
+  });
+  autoUpdater.on("update-downloaded", (info) => {
+    setUpdateState({
+      status: "downloaded",
+      message: `v${info.version} 已下载，可立即安装`,
+      version: info.version,
+      progress: 100
+    });
+  });
+  autoUpdater.on("error", (error) => {
+    applyUpdateError(error);
+  });
+  if (!app.isPackaged) {
+    setUpdateState({
+      status: "development",
+      message: "开发版本不检查在线更新",
+      version: app.getVersion()
+    });
+    return;
+  }
+  setTimeout(() => {
+    void autoUpdater.checkForUpdates().catch(() => {});
+  }, 8000);
 }
 
 function runCopyShortcut() {
@@ -910,10 +1002,9 @@ function registerIpc() {
     }
     const shortcutFailures = registerShortcuts();
     if (store.data.provider === "ollama") {
-      void warmOllama(store.data).catch(() => {});
-    }
-    if (store.data.speechProvider === "mambo") {
-      startMamboBackgroundService();
+      void ensureLocalOllamaRunning()
+        .then(() => warmOllama(store.data))
+        .catch(() => {});
     }
     return { settings, shortcutFailures };
   });
@@ -933,6 +1024,9 @@ function registerIpc() {
   ipcMain.handle("codex:models", (_event, patch) =>
     codexModels({ ...store.data, ...(patch || {}) })
   );
+  ipcMain.handle("ollama:models", (_event, patch) =>
+    listOllamaModels({ ...store.data, ...(patch || {}) })
+  );
   ipcMain.handle("speech:synthesize", async (_event, payload) => {
     if (
       store.data.speechProvider !== "mambo" ||
@@ -951,25 +1045,10 @@ function registerIpc() {
       };
     }
   });
-  ipcMain.handle("speech:prepare", async (_event, payload) => {
-    if (
-      store.data.speechProvider !== "mambo" ||
-      !/[\u3400-\u9fff]/.test(String(payload?.text || "")) ||
-      String(payload?.text || "").length > 600
-    ) {
-      return { ok: false, fallback: true };
-    }
-    try {
-      await cachedMamboSpeech(payload?.text, store.data);
-      return { ok: true };
-    } catch (error) {
-      return {
-        ok: false,
-        fallback: true,
-        error: error instanceof Error ? error.message : String(error)
-      };
-    }
-  });
+  ipcMain.handle("speech:prepare", () => ({
+    ok: false,
+    deferred: true
+  }));
   ipcMain.handle("speech:test", async (_event, patch) => {
     const settings = { ...store.data, ...(patch || {}) };
     const startedAt = Date.now();
@@ -977,10 +1056,11 @@ function registerIpc() {
     if (!(await mamboHealth(settings))) {
       throw new Error("曼波语音引擎没有响应");
     }
+    await stopMambo(settings);
     return {
       ok: true,
       latencyMs: Date.now() - startedAt,
-      message: "曼波语音引擎已连接"
+      message: "曼波语音引擎可用，检查后已关闭"
     };
   });
   ipcMain.handle("translation:translate", async (_event, payload) => {
@@ -1032,7 +1112,10 @@ function registerIpc() {
     const maximumY = display.workArea.y + display.workArea.height - height - 10;
     win.setBounds({
       x: currentBounds.x,
-      y: Math.min(currentBounds.y, maximumY),
+      y: Math.max(
+        display.workArea.y + 10,
+        Math.min(currentBounds.y, maximumY)
+      ),
       width,
       height
     });
@@ -1115,6 +1198,30 @@ function registerIpc() {
     platform: process.platform,
     isPackaged: app.isPackaged
   }));
+  ipcMain.handle("update:get-status", () => updateState);
+  ipcMain.handle("update:check", async () => {
+    if (!app.isPackaged) return updateState;
+    try {
+      await autoUpdater.checkForUpdates();
+    } catch (error) {
+      applyUpdateError(error);
+    }
+    return updateState;
+  });
+  ipcMain.handle("update:download", async () => {
+    if (!app.isPackaged) return updateState;
+    try {
+      await autoUpdater.downloadUpdate();
+    } catch (error) {
+      applyUpdateError(error);
+    }
+    return updateState;
+  });
+  ipcMain.handle("update:install", () => {
+    if (updateState.status !== "downloaded") return false;
+    setImmediate(() => autoUpdater.quitAndInstall(false, true));
+    return true;
+  });
 }
 
 app.whenReady().then(() => {
@@ -1125,14 +1232,15 @@ app.whenReady().then(() => {
       process.env.LINGUABRIDGE_SMOKE_MODIFIER_SHORTCUT;
   }
   if (store.data.provider === "ollama") {
-    void warmOllama(store.data).catch(() => {});
+    void ensureLocalOllamaRunning()
+      .then(() => warmOllama(store.data))
+      .catch(() => {});
   }
-  if (store.data.speechProvider === "mambo") {
-    startMamboBackgroundService();
-  }
+  startMacService(() => store.data);
   registerIpc();
   createMainWindow();
   createTray();
+  setupAutoUpdater();
   if (process.env.LINGUABRIDGE_POPUP_SCREENSHOT_PATH) {
     showTranslationPopup({
       text: "The event loop dispatches callbacks after the call stack is empty, allowing asynchronous work from the task queue to continue without blocking the current function.",
@@ -1201,10 +1309,8 @@ app.whenReady().then(() => {
 app.on("before-quit", async () => {
   isQuitting = true;
   globalShortcut.unregisterAll();
-  if (mamboHealthTimer) {
-    clearInterval(mamboHealthTimer);
-    mamboHealthTimer = null;
-  }
+  stopMacService();
+  await stopMambo(store?.data || {});
   if (modifierHookStarted && modifierHook) {
     modifierHook.stop();
     modifierHookStarted = false;

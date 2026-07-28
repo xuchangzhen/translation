@@ -8,6 +8,7 @@ const MAMBO_PROMPT_TEXT =
 
 let mamboProcess = null;
 let mamboStartup = null;
+let activeSynthesisCount = 0;
 
 function normalizeUrl(value) {
   return String(value || "").trim().replace(/\/+$/, "");
@@ -22,12 +23,28 @@ function isLocalMamboUrl(value) {
   }
 }
 
+function macCompanionUrl(settings) {
+  const explicit = normalizeUrl(settings.macMiniServiceUrl);
+  if (explicit) return explicit;
+  if (process.platform !== "win32") return "";
+  try {
+    const ollama = new URL(normalizeUrl(settings.ollamaUrl));
+    if (["127.0.0.1", "localhost", "::1"].includes(ollama.hostname)) return "";
+    return `${ollama.protocol}//${ollama.hostname}:19876`;
+  } catch {
+    return "";
+  }
+}
+
 async function mamboHealth(settings, timeoutMs = 1500) {
+  const companion = macCompanionUrl(settings);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(
-      `${normalizeUrl(settings.mamboUrl)}/control`,
+      companion
+        ? `${companion}/api/health`
+        : `${normalizeUrl(settings.mamboUrl)}/control`,
       { signal: controller.signal }
     );
     return response.status < 500;
@@ -79,6 +96,11 @@ async function waitForMambo(settings, timeoutMs = 120000) {
 }
 
 async function ensureMamboRunning(settings) {
+  const companion = macCompanionUrl(settings);
+  if (companion) {
+    if (await mamboHealth(settings)) return true;
+    throw new Error(`无法连接 Mac mini 后台服务：${companion}`);
+  }
   if (await mamboHealth(settings)) return true;
   if (!isLocalMamboUrl(settings.mamboUrl)) {
     throw new Error(`无法连接曼波语音服务：${normalizeUrl(settings.mamboUrl)}`);
@@ -127,55 +149,110 @@ async function ensureMamboRunning(settings) {
 async function synthesizeMambo(text, settings) {
   const content = String(text || "").trim();
   if (!content) throw new Error("朗读文本为空");
-  await ensureMamboRunning(settings);
-  const root = validateMamboRoot(settings.mamboRoot);
-  const response = await fetch(`${normalizeUrl(settings.mamboUrl)}/tts`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      text: content.slice(0, 1200),
-      text_lang: "zh",
-      ref_audio_path: path.join(root, "models", "refer.wav"),
-      prompt_lang: "zh",
-      prompt_text: MAMBO_PROMPT_TEXT,
-      text_split_method: "cut5",
-      batch_size: 1,
-      speed_factor: 1,
-      media_type: "wav",
-      streaming_mode: false
-    })
-  });
-  if (!response.ok) {
-    const detail = (await response.text()).trim();
-    throw new Error(`曼波语音合成失败：${detail.slice(0, 400) || response.status}`);
+  const companion = macCompanionUrl(settings);
+  if (companion) {
+    const response = await fetch(`${companion}/api/speech`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: content.slice(0, 1200) })
+    });
+    if (!response.ok) {
+      const detail = (await response.text()).trim();
+      throw new Error(
+        `Mac mini 曼波语音合成失败：${detail.slice(0, 400) || response.status}`
+      );
+    }
+    const audio = Buffer.from(await response.arrayBuffer());
+    if (audio.length < 44 || audio.subarray(0, 4).toString("ascii") !== "RIFF") {
+      throw new Error("Mac mini 返回的不是有效 WAV 音频");
+    }
+    return {
+      audio,
+      mimeType: response.headers.get("content-type") || "audio/wav"
+    };
   }
-  const audio = Buffer.from(await response.arrayBuffer());
-  if (audio.length < 44 || audio.subarray(0, 4).toString("ascii") !== "RIFF") {
-    throw new Error("曼波语音返回的不是有效 WAV 音频");
-  }
-  return {
-    audio,
-    mimeType: response.headers.get("content-type") || "audio/wav"
-  };
-}
 
-function stopMambo() {
-  if (!mamboProcess?.pid) return;
+  activeSynthesisCount += 1;
   try {
-    process.kill(-mamboProcess.pid, "SIGTERM");
-  } catch {
-    try {
-      mamboProcess.kill("SIGTERM");
-    } catch {
-      // The engine has already exited.
+    await ensureMamboRunning(settings);
+    const root = validateMamboRoot(settings.mamboRoot);
+    const response = await fetch(`${normalizeUrl(settings.mamboUrl)}/tts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: content.slice(0, 1200),
+        text_lang: "zh",
+        ref_audio_path: path.join(root, "models", "refer.wav"),
+        prompt_lang: "zh",
+        prompt_text: MAMBO_PROMPT_TEXT,
+        text_split_method: "cut5",
+        batch_size: 1,
+        speed_factor: 1,
+        media_type: "wav",
+        streaming_mode: false
+      })
+    });
+    if (!response.ok) {
+      const detail = (await response.text()).trim();
+      throw new Error(`曼波语音合成失败：${detail.slice(0, 400) || response.status}`);
+    }
+    const audio = Buffer.from(await response.arrayBuffer());
+    if (audio.length < 44 || audio.subarray(0, 4).toString("ascii") !== "RIFF") {
+      throw new Error("曼波语音返回的不是有效 WAV 音频");
+    }
+    return {
+      audio,
+      mimeType: response.headers.get("content-type") || "audio/wav"
+    };
+  } finally {
+    activeSynthesisCount = Math.max(0, activeSynthesisCount - 1);
+    if (activeSynthesisCount === 0 && settings.stopMamboAfterSpeech !== false) {
+      await stopMambo(settings);
     }
   }
-  mamboProcess = null;
+}
+
+async function waitForMamboStop(settings, timeoutMs = 10000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (!(await mamboHealth(settings, 600))) return true;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return false;
+}
+
+async function stopMambo(settings = {}) {
+  if (isLocalMamboUrl(settings.mamboUrl)) {
+    try {
+      await fetch(
+        `${normalizeUrl(settings.mamboUrl)}/control?command=exit`,
+        { method: "GET" }
+      );
+    } catch {
+      // The service may close the connection as part of a successful shutdown.
+    }
+  }
+  if (mamboProcess?.pid) {
+    try {
+      process.kill(-mamboProcess.pid, "SIGTERM");
+    } catch {
+      try {
+        mamboProcess.kill("SIGTERM");
+      } catch {
+        // The engine has already exited.
+      }
+    }
+    mamboProcess = null;
+  }
+  if (isLocalMamboUrl(settings.mamboUrl)) {
+    await waitForMamboStop(settings);
+  }
 }
 
 module.exports = {
   ensureMamboRunning,
   isLocalMamboUrl,
+  macCompanionUrl,
   mamboHealth,
   normalizeUrl,
   stopMambo,
