@@ -38,6 +38,10 @@ function languageOptions(selected: string, includeAuto = true) {
     .join("");
 }
 
+function isSingleEnglishWord(value: string) {
+  return /^[A-Za-z][A-Za-z.'’_-]*$/.test(value.trim());
+}
+
 function codexModelOptions(selected: string) {
   const options = [
     '<option value="">自动选择 Codex 推荐模型</option>',
@@ -955,17 +959,28 @@ function renderResult(result: TranslationResult) {
   }
 
   if (result.explanation) {
-    container.append(resultSection("语境说明", result.explanation));
+    const sourceText =
+      document.querySelector<HTMLTextAreaElement>("#source-text")?.value || "";
+    container.append(
+      resultSection(
+        isSingleEnglishWord(sourceText) ? "名词解析" : "语境说明",
+        result.explanation
+      )
+    );
   } else if (result.needsEnrichment) {
+    const sourceText =
+      document.querySelector<HTMLTextAreaElement>("#source-text")?.value || "";
     const pending = resultSection(
-      "IT 行业解释",
+      isSingleEnglishWord(sourceText) ? "名词解析" : "IT 行业解释",
       "正在后台生成用途、典型场景与注意事项…"
     );
     pending.classList.add("enrichment-pending");
     container.append(pending);
   } else if (result.enrichmentFailed) {
+    const sourceText =
+      document.querySelector<HTMLTextAreaElement>("#source-text")?.value || "";
     const failed = resultSection(
-      "IT 行业解释",
+      isSingleEnglishWord(sourceText) ? "名词解析" : "IT 行业解释",
       "本次技术解释生成失败；译文不受影响，可重新翻译后重试。"
     );
     failed.classList.add("enrichment-failed");

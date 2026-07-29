@@ -199,7 +199,7 @@ function renderResult(result: TranslationResult, source: string) {
   const explanation = result.explanation
     ? `<section class="popup-section">
         <div class="popup-section-heading">
-          <h3>语境说明</h3>
+          <h3>${isSingleEnglishWord(sourceText) ? "名词解析" : "语境说明"}</h3>
           ${
             result.explanation.length > 95
               ? '<button class="popup-expand-button" data-toggle-target="popup-explanation" data-collapsed-label="展开说明" data-expanded-label="收起">展开说明</button>'
@@ -209,9 +209,9 @@ function renderResult(result: TranslationResult, source: string) {
         <p id="popup-explanation" class="popup-section-copy${result.explanation.length > 95 ? " collapsible" : ""}">${escapeHtml(result.explanation)}</p>
       </section>`
     : result.needsEnrichment
-      ? `<section class="popup-section popup-enrichment-pending"><div class="popup-section-heading"><h3>IT 行业解释</h3></div><p class="popup-section-copy">正在后台生成用途、典型场景与注意事项…</p></section>`
+      ? `<section class="popup-section popup-enrichment-pending"><div class="popup-section-heading"><h3>${isSingleEnglishWord(sourceText) ? "名词解析" : "IT 行业解释"}</h3></div><p class="popup-section-copy">正在后台生成用途、典型场景与注意事项…</p></section>`
       : result.enrichmentFailed
-        ? `<section class="popup-section popup-enrichment-failed"><div class="popup-section-heading"><h3>IT 行业解释</h3></div><p class="popup-section-copy">本次技术解释生成失败；译文不受影响，可重新触发翻译后重试。</p></section>`
+        ? `<section class="popup-section popup-enrichment-failed"><div class="popup-section-heading"><h3>${isSingleEnglishWord(sourceText) ? "名词解析" : "IT 行业解释"}</h3></div><p class="popup-section-copy">本次技术解释生成失败；译文不受影响，可重新触发翻译后重试。</p></section>`
         : "";
   const phonetic = result.phonetic && isSingleEnglishWord(sourceText)
     ? `<div class="popup-phonetic"><div class="popup-phonetic-text"><small>英文音标</small><span>${escapeHtml(result.phonetic)}</span></div></div>`

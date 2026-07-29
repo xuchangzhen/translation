@@ -227,7 +227,7 @@ function parseEnrichmentResult(raw) {
 
 function isLikelyTechnicalText(text) {
   const value = String(text || "");
-  return /(?:\b(?:API|SDK|HTTP|HTTPS|REST|RESTful|GraphQL|gRPC|JSON|XML|YAML|SQL|NoSQL|CSS|HTML|DOM|JavaScript|TypeScript|Node\.?js|Python|Java|Kotlin|Swift|Rust|Golang|C\+\+|C#|backend|frontend|fullstack|database|server|client|framework|library|function|class|interface|pointer|thread|process|kernel|compiler|runtime|event loop|callback|async|await|promise|Docker|Kubernetes|Git|Linux|Unix|firmware|embedded|microcontroller|interrupt|vector|cache|queue|stack|heap|gateway|endpoint|deployment|DevOps|cloud|algorithm|binary tree|dependency injection|middleware|authentication|authorization|token|container|virtual machine|repository|branch|commit|CI\/CD|TCP|UDP|IP|DNS|SSH|WebSocket|MQTT|Redis|Kafka|Nginx|React|Vue|Angular|Spring|Django|Flask|database|microservice|distributed system|memory|CPU|GPU)\b|(?:前端|后端|全栈|嵌入式|固件|微控制器|单片机|操作系统|内核|编译器|运行时|事件循环|回调|异步|线程|进程|协程|中断|向量|指针|内存|算法|数据结构|二叉树|数据库|缓存|消息队列|网关|接口|中间件|依赖注入|容器|虚拟机|微服务|分布式|云计算|部署|鉴权|认证|授权|令牌|源码|代码|函数|类|仓库|分支|提交|开发|编程)|[{}\[\]();]|(?:--?[a-z][\w-]*))/i.test(
+  return /(?:\b(?:API|SDK|HTTP|HTTPS|REST|RESTful|GraphQL|gRPC|JSON|XML|YAML|SQL|NoSQL|CSS|HTML|DOM|JavaScript|TypeScript|Node\.?js|Python|Java|Kotlin|Swift|Rust|Golang|C\+\+|C#|backend|frontend|fullstack|database|server|client|framework|library|function|method|class|object|interface|parameter|argument|variable|constant|property|field|reference|pointer|thread|process|kernel|compiler|runtime|event loop|callback|closure|recursion|iterator|async|await|promise|exception|error|debug|logging|module|package|component|plugin|schema|query|index|key|value|buffer|stream|socket|port|protocol|request|response|payload|header|proxy|session|cookie|config|environment|build|release|version|dependency|Docker|Kubernetes|Git|Linux|Unix|firmware|embedded|microcontroller|interrupt|vector|cache|queue|stack|heap|gateway|endpoint|deployment|DevOps|cloud|algorithm|binary tree|dependency injection|middleware|authentication|authorization|token|container|virtual machine|repository|branch|commit|CI\/CD|TCP|UDP|IP|DNS|SSH|WebSocket|MQTT|Redis|Kafka|Nginx|React|Vue|Angular|Spring|Django|Flask|microservice|distributed system|memory|CPU|GPU)\b|(?:前端|后端|全栈|嵌入式|固件|微控制器|单片机|操作系统|内核|编译器|运行时|事件循环|回调|异步|线程|进程|协程|中断|向量|指针|内存|算法|数据结构|二叉树|数据库|缓存|消息队列|网关|接口|中间件|依赖注入|容器|虚拟机|微服务|分布式|云计算|部署|鉴权|认证|授权|令牌|源码|代码|函数|方法|对象|参数|变量|常量|属性|字段|引用|异常|调试|日志|模块|组件|插件|开发|编程)|[{}\[\]();]|(?:--?[a-z][\w-]*))/i.test(
     value
   );
 }
@@ -294,14 +294,18 @@ function buildMessages(text, options) {
 
 function buildEnrichmentMessages(text, translation, options) {
   const target = LANGUAGE_NAMES[options.targetLanguage] || options.targetLanguage;
+  const singleWordLookup = isSingleEnglishWord(text);
   const system = [
     "你负责补充 IT 翻译的技术语境，不要重复生成译文或音标。",
     "必须只输出合法 JSON，不要使用 Markdown。",
     "字段仅包含 explanation, terms, alternatives。",
     "explanation 用目标语言说明原文中的技术内容在实际开发中做什么、典型场景和必要注意点，控制在 2 句话内。",
     "terms 只列真正的 IT 术语，最多 4 项；每项包含 term, translation, definition, category。",
+    singleWordLookup
+      ? "原文是单个英文词：先判断它是否具有软件、硬件、网络或其他 IT 专业含义；如果有，terms 必须包含这个原词及准确的技术定义，即使它在日常英语中也有普通含义；如果完全没有 IT 含义，返回空 explanation、空 terms 和空 alternatives。"
+      : "",
     "alternatives 最多 2 项；没有有价值的替代表达时返回空数组。"
-  ].join("\n");
+  ].filter(Boolean).join("\n");
   const user = `目标语言：${target}\n原文：\n${text}\n\n已完成译文：\n${translation}`;
   return [
     { role: "system", content: system },
@@ -960,6 +964,7 @@ async function translateText(text, settings, apiKey = "") {
     ...result,
     needsEnrichment:
       result.isTechnical === true ||
+      isSingleEnglishWord(normalizedText) ||
       isLikelyTechnicalText(normalizedText) ||
       isLikelyTechnicalText(result.translation)
   };

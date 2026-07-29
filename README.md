@@ -20,6 +20,7 @@
 - 中文译文可使用 Mac mini 的 MamboTTS / GPT-SoVITS 曼波音色；只在点击朗读时加载，音频生成后自动关闭模型
 - 通过模型判断与本地技术词识别双重检测前端、后端、DevOps、数据库、云计算、嵌入式等 IT 内容，并在译文出现后继续补充实际用途
 - TranslateGemma 主翻译 + Qwen 技术术语解析的本地混合链路，并在 TranslateGemma 不可用时自动回退 Qwen
+- 单个英文词在 TranslateGemma 完成翻译后仍由 Qwen 判断专业含义并补充名词解析
 - Ollama、Google Cloud Translation、ChatGPT/Codex 额度（实验）、OpenAI Responses API、通用 OpenAI Chat Completions 兼容接口
 - 显示当前版本，并支持在应用内检查、下载和一键安装 GitHub Release 更新
 - Ollama 技术解析模型与主翻译模型均从当前服务读取已安装模型，以列表方式选择

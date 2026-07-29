@@ -149,9 +149,36 @@ test("IPA is shown for one English word but hidden for phrases and sentences", (
 
 test("technical enrichment is only requested for likely IT text", () => {
   assert.equal(isLikelyTechnicalText("Hello, nice to meet you."), false);
+  assert.equal(isLikelyTechnicalText("parameter"), true);
+  assert.equal(isLikelyTechnicalText("argument"), true);
+  assert.equal(isLikelyTechnicalText("variable"), true);
   assert.equal(isLikelyTechnicalText("The event loop schedules callbacks."), true);
   assert.equal(isLikelyTechnicalText("后端开发使用依赖注入管理组件"), true);
   assert.equal(isLikelyTechnicalText("An interrupt vector maps hardware events."), true);
+});
+
+test("TranslateGemma single-word translations still trigger Qwen term analysis", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    text: async () =>
+      JSON.stringify({ message: { content: "参数" } })
+  });
+  try {
+    const result = await translateText("parameter", {
+      provider: "ollama",
+      sourceLanguage: "en",
+      targetLanguage: "zh-CN",
+      ollamaUrl: "http://127.0.0.1:11434",
+      ollamaModel: "qwen3:8b",
+      ollamaTranslationModel: "translategemma:4b",
+      useTranslateGemma: true
+    });
+    assert.equal(result.translation, "参数");
+    assert.equal(result.needsEnrichment, true);
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 
 test("model technical classification triggers enrichment for unknown jargon", async () => {

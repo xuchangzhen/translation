@@ -1260,10 +1260,19 @@ app.whenReady().then(() => {
   createTray();
   setupAutoUpdater();
   if (process.env.LINGUABRIDGE_POPUP_SCREENSHOT_PATH) {
-    showTranslationPopup({
-      text: "The event loop dispatches callbacks after the call stack is empty, allowing asynchronous work from the task queue to continue without blocking the current function.",
-      source: "selection",
-      result: {
+    const smokePopupText = String(
+      process.env.LINGUABRIDGE_SMOKE_POPUP_TEXT || ""
+    ).trim();
+    showTranslationPopup(
+      smokePopupText
+        ? {
+            text: smokePopupText,
+            source: "selection"
+          }
+        : {
+          text: "The event loop dispatches callbacks after the call stack is empty, allowing asynchronous work from the task queue to continue without blocking the current function.",
+          source: "selection",
+          result: {
         sourceLanguage: "en",
         targetLanguage: "zh-CN",
         translation: "调用栈清空后，事件循环会分派回调函数执行。",
@@ -1299,8 +1308,9 @@ app.whenReady().then(() => {
           }
         ],
         alternatives: []
-      }
-    });
+          }
+        }
+    );
   }
   const failures = registerShortcuts();
   if (failures.length || startupShortcutNotice) {
