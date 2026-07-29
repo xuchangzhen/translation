@@ -13,6 +13,7 @@ jobs:
   build:
     name: 构建 ${{ matrix.os }} 安装包
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-14
@@ -46,12 +47,6 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: 检查并构建安装包
         run: pnpm run ${{ matrix.command }}
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
       - name: 保存安装包
         uses: actions/upload-artifact@v4
         with:
