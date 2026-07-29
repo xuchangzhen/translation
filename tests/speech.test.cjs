@@ -59,7 +59,7 @@ test("Mambo synthesis sends Chinese API v2 payload and accepts WAV", async () =>
     assert.equal(result.audio.subarray(0, 4).toString("ascii"), "RIFF");
     assert.equal(payload.text_lang, "zh");
     assert.equal(payload.text, "你好");
-    assert.match(payload.ref_audio_path, /models\/refer\.wav$/);
+    assert.equal(path.basename(payload.ref_audio_path), "refer.wav");
   } finally {
     global.fetch = originalFetch;
     fs.rmSync(root, { recursive: true, force: true });
