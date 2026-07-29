@@ -1,6 +1,6 @@
 {
   "name": "translation",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "private": true,
   "description": "跨平台全局划词与截图翻译工具",
   "main": "src/main.cjs",
@@ -96,7 +96,8 @@
       "artifactName": "translation-setup-${version}-${arch}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true
+      "createDesktopShortcut": true,
+      "deleteAppDataOnUninstall": false
     },
     "portable": {
       "artifactName": "translation-portable-${version}-${arch}.${ext}"

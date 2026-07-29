@@ -26,6 +26,7 @@
 - Ollama 技术解析模型与主翻译模型均从当前服务读取已安装模型，以列表方式选择
 - Codex 模型下拉列表从当前登录账号的本机 Codex 目录动态读取
 - API Key 通过 macOS Keychain / Windows DPAPI 对应的 Electron `safeStorage` 加密
+- 设置固定保存在不随版本和安装包名称变化的 `translation` 用户数据目录；首次升级会自动迁移旧版配置，并保留上一份有效设置作为损坏回退
 - macOS / Windows 自动构建工作流
 
 ## 为什么默认推荐 Mac mini + Ollama

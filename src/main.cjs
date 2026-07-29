@@ -51,6 +51,31 @@ const {
   popupBoundsNearPoint,
   popupWindowPresentation
 } = require("./lib/windowing.cjs");
+const {
+  migrateLegacyUserData
+} = require("./lib/user-data.cjs");
+
+function configureStableUserDataPath() {
+  const currentUserDataPath = app.getPath("userData");
+  try {
+    const result = migrateLegacyUserData({
+      appDataPath: app.getPath("appData"),
+      currentUserDataPath
+    });
+    app.setPath("userData", result.stablePath);
+    if (result.migrated) {
+      console.info(
+        `Migrated settings from ${result.sourcePath} to ${result.stablePath}`
+      );
+    }
+    return result.stablePath;
+  } catch (error) {
+    console.error("Unable to configure the stable settings directory:", error);
+    return currentUserDataPath;
+  }
+}
+
+configureStableUserDataPath();
 
 let mainWindow;
 let popupWindow;

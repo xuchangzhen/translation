@@ -4,7 +4,7 @@ const path = require("node:path");
 const { safeStorage } = require("electron");
 
 const DEFAULT_SETTINGS = Object.freeze({
-  settingsSchemaVersion: 2,
+  settingsSchemaVersion: 3,
   provider: "ollama",
   sourceLanguage: "auto",
   targetLanguage: "zh-CN",
@@ -37,32 +37,73 @@ const DEFAULT_SETTINGS = Object.freeze({
 class SettingsStore {
   constructor(userDataPath) {
     this.filePath = path.join(userDataPath, "settings.json");
+    this.backupFilePath = path.join(userDataPath, "settings.backup.json");
     this.data = this.read();
   }
 
+  normalize(parsed) {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("设置文件内容无效");
+    }
+    const migrated = { ...parsed };
+    if (
+      Number(migrated.settingsSchemaVersion || 0) < 2 &&
+      process.platform === "win32" &&
+      migrated.speechProvider === "system"
+    ) {
+      migrated.speechProvider = "mambo";
+    }
+    migrated.settingsSchemaVersion = DEFAULT_SETTINGS.settingsSchemaVersion;
+    return { ...DEFAULT_SETTINGS, ...migrated };
+  }
+
+  readFile(filePath) {
+    return this.normalize(JSON.parse(fs.readFileSync(filePath, "utf8")));
+  }
+
   read() {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf8"));
-      const migrated = { ...parsed };
-      if (
-        Number(migrated.settingsSchemaVersion || 0) < 2 &&
-        process.platform === "win32" &&
-        migrated.speechProvider === "system"
-      ) {
-        migrated.speechProvider = "mambo";
+    for (const candidate of [this.filePath, this.backupFilePath]) {
+      try {
+        return this.readFile(candidate);
+      } catch {
+        // Try the last known-good backup before falling back to defaults.
       }
-      migrated.settingsSchemaVersion = DEFAULT_SETTINGS.settingsSchemaVersion;
-      return { ...DEFAULT_SETTINGS, ...migrated };
+    }
+    return { ...DEFAULT_SETTINGS };
+  }
+
+  backupCurrentFile() {
+    if (!fs.existsSync(this.filePath)) return;
+    try {
+      this.readFile(this.filePath);
+      fs.copyFileSync(this.filePath, this.backupFilePath);
     } catch {
-      return { ...DEFAULT_SETTINGS };
+      // Never replace a valid backup with a corrupt current file.
     }
   }
 
   save() {
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-    fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), {
+    const directory = path.dirname(this.filePath);
+    const temporaryPath = path.join(
+      directory,
+      `settings.${process.pid}.tmp`
+    );
+    fs.mkdirSync(directory, { recursive: true });
+    this.backupCurrentFile();
+    fs.writeFileSync(temporaryPath, JSON.stringify(this.data, null, 2), {
       mode: 0o600
     });
+    try {
+      fs.renameSync(temporaryPath, this.filePath);
+    } catch (error) {
+      try {
+        fs.copyFileSync(temporaryPath, this.filePath);
+        fs.unlinkSync(temporaryPath);
+      } catch {
+        if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+        throw error;
+      }
+    }
   }
 
   publicValue() {
