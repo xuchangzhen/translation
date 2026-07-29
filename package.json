@@ -1,6 +1,6 @@
 {
-  "name": "linguabridge",
-  "version": "0.5.3",
+  "name": "translation",
+  "version": "0.5.4",
   "private": true,
   "description": "跨平台全局划词与截图翻译工具",
   "main": "src/main.cjs",
@@ -66,7 +66,7 @@
     "icon": "build/icon.png",
     "mac": {
       "category": "public.app-category.productivity",
-      "artifactName": "linguabridge-${version}-${arch}-mac.${ext}",
+      "artifactName": "translation-${version}-${arch}-mac.${ext}",
       "target": [
         "dmg",
         "zip"
@@ -93,13 +93,13 @@
       ]
     },
     "nsis": {
-      "artifactName": "linguabridge-setup-${version}-${arch}.${ext}",
+      "artifactName": "translation-setup-${version}-${arch}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true
     },
     "portable": {
-      "artifactName": "linguabridge-portable-${version}-${arch}.${ext}"
+      "artifactName": "translation-portable-${version}-${arch}.${ext}"
     }
   }
 }

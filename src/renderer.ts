@@ -1098,6 +1098,11 @@ function swapLanguages() {
   scheduleRealtimeTranslation(100);
 }
 
+function syncShortcutRecordingState() {
+  const active = Boolean(document.querySelector(".shortcut-input.recording"));
+  void window.lingua.setShortcutRecording(active);
+}
+
 function captureShortcut(event: KeyboardEvent, input: HTMLInputElement) {
   event.preventDefault();
   event.stopPropagation();
@@ -1137,6 +1142,7 @@ function captureShortcut(event: KeyboardEvent, input: HTMLInputElement) {
   delete input.dataset.previousValue;
   delete input.dataset.pendingModifier;
   input.classList.remove("recording");
+  syncShortcutRecordingState();
   input.blur();
 }
 
@@ -1162,6 +1168,7 @@ function captureModifierShortcut(
   delete input.dataset.previousValue;
   delete input.dataset.pendingModifier;
   input.classList.remove("recording");
+  syncShortcutRecordingState();
   input.blur();
 }
 
@@ -1176,6 +1183,7 @@ function beginShortcutCapture(input: HTMLInputElement) {
     input.value = "请按下新组合键…";
     input.classList.add("recording");
   }
+  syncShortcutRecordingState();
   input.focus();
 }
 
@@ -1185,6 +1193,7 @@ function cancelShortcutCapture(input: HTMLInputElement) {
   delete input.dataset.previousValue;
   delete input.dataset.pendingModifier;
   input.classList.remove("recording");
+  syncShortcutRecordingState();
 }
 
 function validateShortcuts() {

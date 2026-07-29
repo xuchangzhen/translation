@@ -3,6 +3,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("lingua", {
   getSettings: () => ipcRenderer.invoke("settings:get"),
   saveSettings: (settings) => ipcRenderer.invoke("settings:save", settings),
+  setShortcutRecording: (active) =>
+    ipcRenderer.invoke("shortcut:recording", active),
   clearApiKey: () => ipcRenderer.invoke("settings:clear-api-key"),
   copyText: (text) => ipcRenderer.invoke("clipboard:write", text),
   codexLogin: (settings = {}) => ipcRenderer.invoke("codex:login", settings),

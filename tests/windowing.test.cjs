@@ -30,6 +30,7 @@ test("unpinned macOS popup starts above the active app and releases on outside c
   assert.deepEqual(popupWindowPresentation("darwin", false), {
     type: "panel",
     initiallyAboveOtherApps: true,
+    brieflyAboveOtherApps: false,
     releaseOnOutsideClick: true
   });
 });
@@ -38,11 +39,19 @@ test("pinned macOS popup stays floating and Windows keeps normal window behavior
   assert.deepEqual(popupWindowPresentation("darwin", true), {
     type: "panel",
     initiallyAboveOtherApps: true,
+    brieflyAboveOtherApps: false,
     releaseOnOutsideClick: false
   });
   assert.deepEqual(popupWindowPresentation("win32", false), {
     type: undefined,
     initiallyAboveOtherApps: false,
+    brieflyAboveOtherApps: true,
+    releaseOnOutsideClick: false
+  });
+  assert.deepEqual(popupWindowPresentation("win32", true), {
+    type: undefined,
+    initiallyAboveOtherApps: true,
+    brieflyAboveOtherApps: false,
     releaseOnOutsideClick: false
   });
 });

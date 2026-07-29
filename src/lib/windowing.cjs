@@ -18,9 +18,11 @@ function popupBoundsNearPoint(cursor, area, width, height, margin = 10) {
 
 function popupWindowPresentation(platform, pinned) {
   const isMac = platform === "darwin";
+  const isWindows = platform === "win32";
   return {
     type: isMac ? "panel" : undefined,
     initiallyAboveOtherApps: isMac || Boolean(pinned),
+    brieflyAboveOtherApps: isWindows && !pinned,
     releaseOnOutsideClick: isMac && !pinned
   };
 }

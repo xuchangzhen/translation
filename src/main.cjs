@@ -16,7 +16,13 @@ const {
   shell
 } = require("electron");
 const { DEFAULT_SETTINGS, SettingsStore } = require("./lib/settings.cjs");
-const { isReservedMacShortcut } = require("./lib/shortcuts.cjs");
+const {
+  hookShortcutMatches,
+  isModifierOnlyShortcut,
+  isReservedMacShortcut,
+  normalizeModifierShortcut,
+  parseHookShortcut
+} = require("./lib/shortcuts.cjs");
 const {
   codexLogin,
   codexLoginStatus,
@@ -61,9 +67,14 @@ let ocrWorkerLanguages = "";
 let modifierHook = null;
 let modifierHookStarted = false;
 let modifierShortcutHandlers = new Map();
+let hookShortcutHandlers = [];
 let modifierCandidate = null;
 let modifierCandidateTainted = false;
+let shortcutRecording = false;
+let suppressHookShortcutsUntil = 0;
+const shortcutTriggerTimes = new Map();
 let popupDismissClickSerial = 0;
+let popupRevealSerial = 0;
 let popupManuallyHidden = false;
 const translationCache = new Map();
 const enrichmentCache = new Map();
@@ -284,6 +295,9 @@ function createMainWindow() {
       enterBackgroundWindowMode();
     }
   });
+  mainWindow.on("hide", () => {
+    shortcutRecording = false;
+  });
 }
 
 function showMainWindow() {
@@ -302,16 +316,32 @@ function popupBounds(width, height) {
 
 function revealTranslationPopup() {
   if (!popupWindow || popupWindow.isDestroyed()) return;
+  const revealSerial = ++popupRevealSerial;
   const presentation = popupWindowPresentation(
     process.platform,
     store.data.popupAlwaysOnTop
   );
   popupWindow.setAlwaysOnTop(
-    presentation.initiallyAboveOtherApps,
+    presentation.initiallyAboveOtherApps ||
+      presentation.brieflyAboveOtherApps,
     "floating"
   );
   popupWindow.showInactive();
   popupWindow.moveTop();
+  if (presentation.brieflyAboveOtherApps) {
+    setTimeout(() => {
+      if (
+        revealSerial !== popupRevealSerial ||
+        !popupWindow ||
+        popupWindow.isDestroyed() ||
+        store?.data.popupAlwaysOnTop
+      ) {
+        return;
+      }
+      popupWindow.setAlwaysOnTop(false);
+      popupWindow.moveTop();
+    }, 700);
+  }
 }
 
 function showTranslationPopup(payload) {
@@ -358,14 +388,19 @@ function showTranslationPopup(payload) {
         skipTransformProcessType: true
       });
     }
-    popupWindow.loadURL(rendererUrl("popup.html"));
-    popupWindow.once("ready-to-show", () => {
+    let popupRevealed = false;
+    const revealCreatedPopup = () => {
+      if (popupRevealed || !popupWindow || popupWindow.isDestroyed()) return;
+      popupRevealed = true;
       revealTranslationPopup();
       setTimeout(() => {
         suppressMainWindowActivation = false;
       }, 350);
-    });
+    };
+    popupWindow.loadURL(rendererUrl("popup.html"));
+    popupWindow.once("ready-to-show", revealCreatedPopup);
     popupWindow.webContents.once("did-finish-load", () => {
+      revealCreatedPopup();
       if (process.env.LINGUABRIDGE_POPUP_SCREENSHOT_PATH) {
         if (process.env.LINGUABRIDGE_SMOKE_POPUP_TARGET) {
           const target = JSON.stringify(
@@ -417,7 +452,7 @@ function showTranslationPopup(payload) {
 
 function togglePopupVisibility() {
   if (popupWindow && !popupWindow.isDestroyed()) {
-    if (!popupManuallyHidden) {
+    if (popupWindow.isVisible() && !popupManuallyHidden) {
       popupManuallyHidden = true;
       popupWindow.hide();
       return;
@@ -555,9 +590,31 @@ function setupAutoUpdater() {
   }, 8000);
 }
 
-function runCopyShortcut() {
+function runPowerShellCopyShortcut() {
   return new Promise((resolve, reject) => {
-    if (process.platform === "darwin") {
+    execFile(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Sta",
+        "-Command",
+        "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^c')"
+      ],
+      { windowsHide: true, timeout: 5000 },
+      (error) => (error ? reject(error) : resolve())
+    );
+  });
+}
+
+function runNativeWindowsCopyShortcut() {
+  const { uIOhook, UiohookKey } = require("uiohook-napi");
+  suppressHookShortcutsUntil = Date.now() + 500;
+  uIOhook.keyTap(UiohookKey.C, [UiohookKey.Ctrl]);
+}
+
+function runCopyShortcut() {
+  if (process.platform === "darwin") {
+    return new Promise((resolve, reject) => {
       execFile(
         "osascript",
         [
@@ -566,44 +623,69 @@ function runCopyShortcut() {
         ],
         (error) => (error ? reject(error) : resolve())
       );
-      return;
+    });
+  }
+  if (process.platform === "win32") {
+    try {
+      runNativeWindowsCopyShortcut();
+      return Promise.resolve();
+    } catch (error) {
+      return runPowerShellCopyShortcut().catch(() => {
+        throw error;
+      });
     }
-
-    if (process.platform === "win32") {
-      execFile(
-        "powershell.exe",
-        [
-          "-NoProfile",
-          "-Sta",
-          "-Command",
-          "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^c')"
-        ],
-        { windowsHide: true },
-        (error) => (error ? reject(error) : resolve())
-      );
-      return;
-    }
-
-    reject(new Error("当前平台暂不支持自动复制选中文本"));
-  });
+  }
+  return Promise.reject(new Error("当前平台暂不支持自动复制选中文本"));
 }
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitForClipboardText(attempts, interval) {
+  for (let index = 0; index < attempts; index += 1) {
+    await delay(interval);
+    const text = clipboard.readText().trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function restoreClipboardText(previousText) {
+  if (previousText) clipboard.writeText(previousText);
+  else clipboard.clear();
+}
+
 async function captureSelectedText() {
   const previousText = clipboard.readText();
   clipboard.clear();
   try {
-    await runCopyShortcut();
-    let selectedText = "";
-    for (let index = 0; index < 12; index += 1) {
-      await delay(45);
-      selectedText = clipboard.readText().trim();
-      if (selectedText) break;
+    if (process.platform === "win32") {
+      // RegisterHotKey fires on keydown. Let the user's shortcut keys return
+      // to the up state before injecting Ctrl+C into the foreground app.
+      await delay(140);
     }
-    if (previousText) clipboard.writeText(previousText);
+    await runCopyShortcut();
+    let selectedText = await waitForClipboardText(
+      process.platform === "win32" ? 8 : 12,
+      45
+    );
+    if (!selectedText && process.platform === "win32") {
+      // A shortcut can still be physically held for a little longer. Retry
+      // the native event once, then retain PowerShell as a compatibility path.
+      await delay(100);
+      try {
+        runNativeWindowsCopyShortcut();
+      } catch {
+        // The explicit PowerShell fallback below handles missing native hooks.
+      }
+      selectedText = await waitForClipboardText(8, 45);
+    }
+    if (!selectedText && process.platform === "win32") {
+      await runPowerShellCopyShortcut();
+      selectedText = await waitForClipboardText(12, 45);
+    }
+    restoreClipboardText(previousText);
     if (!selectedText) {
       throw new Error(
         process.platform === "darwin"
@@ -616,17 +698,35 @@ async function captureSelectedText() {
       source: "selection"
     });
   } catch (error) {
-    if (previousText) clipboard.writeText(previousText);
-    showTranslationPopup({ error: error.message, source: "selection" });
+    restoreClipboardText(previousText);
+    showTranslationPopup({
+      error: error instanceof Error ? error.message : String(error),
+      source: "selection"
+    });
   }
+}
+
+function invokeShortcut(id, handler) {
+  if (shortcutRecording) return;
+  const now = Date.now();
+  if (now - (shortcutTriggerTimes.get(id) || 0) < 220) return;
+  shortcutTriggerTimes.set(id, now);
+  setTimeout(() => {
+    void Promise.resolve(handler()).catch((error) => {
+      console.error(`Unable to run shortcut ${id}:`, error);
+    });
+  }, 0);
 }
 
 function registerShortcuts() {
   globalShortcut.unregisterAll();
   modifierShortcutHandlers = new Map();
+  hookShortcutHandlers = [];
   modifierCandidate = null;
   modifierCandidateTainted = false;
+  shortcutTriggerTimes.clear();
   const failures = [];
+  const hookOnlyFallbacks = [];
   const shortcuts = [
     [store.data.selectionShortcut, captureSelectedText, "划词翻译"],
     [store.data.screenshotShortcut, startScreenshotCapture, "截图翻译"],
@@ -638,28 +738,52 @@ function registerShortcuts() {
   ];
 
   for (const [shortcut, handler, label] of shortcuts) {
+    const invoke = () => invokeShortcut(label, handler);
     if (isModifierOnlyShortcut(shortcut)) {
       const normalized = normalizeModifierShortcut(shortcut);
       if (modifierShortcutHandlers.has(normalized)) {
         failures.push(`${label}（${shortcut}）`);
       } else {
-        modifierShortcutHandlers.set(normalized, handler);
+        modifierShortcutHandlers.set(normalized, { id: label, handler });
       }
       continue;
     }
-    if (!shortcut || !globalShortcut.register(shortcut, handler)) {
+    const registered = Boolean(
+      shortcut && globalShortcut.register(shortcut, invoke)
+    );
+    const hookShortcut =
+      process.platform === "win32"
+        ? parseHookShortcut(shortcut, process.platform)
+        : null;
+    if (hookShortcut) {
+      hookShortcutHandlers.push({
+        ...hookShortcut,
+        id: label,
+        handler
+      });
+    }
+    if (!registered && hookShortcut) {
+      hookOnlyFallbacks.push({ label, shortcut });
+    } else if (!registered) {
       failures.push(`${label}（${shortcut || "未设置"}）`);
     }
   }
   const needsGlobalMouseHook =
-    modifierShortcutHandlers.size > 0 || process.platform === "darwin";
-  if (needsGlobalMouseHook && !ensureModifierHook()) {
+    modifierShortcutHandlers.size > 0 ||
+    hookShortcutHandlers.length > 0 ||
+    process.platform === "darwin";
+  const hookAvailable = !needsGlobalMouseHook || ensureModifierHook();
+  if (!hookAvailable) {
     for (const [shortcut, _handler, label] of shortcuts) {
       if (isModifierOnlyShortcut(shortcut)) {
         failures.push(`${label}（${shortcut}）`);
       }
     }
+    for (const { label, shortcut } of hookOnlyFallbacks) {
+      failures.push(`${label}（${shortcut}）`);
+    }
     modifierShortcutHandlers.clear();
+    hookShortcutHandlers = [];
   } else if (
     !needsGlobalMouseHook &&
     modifierHookStarted &&
@@ -668,20 +792,7 @@ function registerShortcuts() {
     modifierHook.stop();
     modifierHookStarted = false;
   }
-  return failures;
-}
-
-function normalizeModifierShortcut(value) {
-  const shortcut = String(value || "").toLowerCase();
-  if (["alt", "option"].includes(shortcut)) return "Alt";
-  if (["control", "ctrl"].includes(shortcut)) return "Control";
-  if (shortcut === "shift") return "Shift";
-  if (["command", "cmd", "meta", "super"].includes(shortcut)) return "Meta";
-  return "";
-}
-
-function isModifierOnlyShortcut(value) {
-  return Boolean(normalizeModifierShortcut(value));
+  return [...new Set(failures)];
 }
 
 function isMacDesktopPoint(point) {
@@ -815,6 +926,17 @@ function ensureModifierHook() {
         if (modifierCandidate && modifier !== modifierCandidate) {
           modifierCandidateTainted = true;
         }
+        if (
+          Date.now() >= suppressHookShortcutsUntil &&
+          !shortcutRecording
+        ) {
+          for (const shortcut of hookShortcutHandlers) {
+            const keycode = UiohookKey[shortcut.key];
+            if (hookShortcutMatches(shortcut, event, keycode)) {
+              invokeShortcut(shortcut.id, shortcut.handler);
+            }
+          }
+        }
       });
       uIOhook.on("keyup", (event) => {
         const modifier = namesByCode.get(event.keycode);
@@ -824,9 +946,12 @@ function ensureModifierHook() {
         modifierCandidate = null;
         modifierCandidateTainted = false;
         if (shouldTrigger) {
-          const handler = modifierShortcutHandlers.get(candidate);
-          if (handler && !mainWindow?.isFocused()) {
-            setTimeout(() => void handler(), 25);
+          const shortcut = modifierShortcutHandlers.get(candidate);
+          if (shortcut && !shortcutRecording) {
+            setTimeout(
+              () => invokeShortcut(shortcut.id, shortcut.handler),
+              25
+            );
           }
         }
       });
@@ -992,6 +1117,10 @@ async function recognizeAndTranslate(imageBuffer) {
 }
 
 function registerIpc() {
+  ipcMain.handle("shortcut:recording", (_event, active) => {
+    shortcutRecording = Boolean(active);
+    return true;
+  });
   ipcMain.handle("settings:get", () => store.publicValue());
   ipcMain.handle("settings:save", (_event, patch) => {
     for (const [key, label] of [

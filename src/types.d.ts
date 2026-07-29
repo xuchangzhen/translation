@@ -70,6 +70,7 @@ interface LinguaApi {
   saveSettings(
     settings: Partial<AppSettings>
   ): Promise<{ settings: AppSettings; shortcutFailures: string[] }>;
+  setShortcutRecording(active: boolean): Promise<boolean>;
   clearApiKey(): Promise<AppSettings>;
   copyText(text: string): Promise<boolean>;
   codexLogin(settings?: Partial<AppSettings>): Promise<{
