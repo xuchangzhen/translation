@@ -21,13 +21,13 @@ jobs:
             artifact: |
               release/*.dmg
               release/*.zip
-              release/*.yml
+              release/latest-mac.yml
               release/*.blockmap
           - os: windows-latest
             command: build:win
             artifact: |
               release/*.exe
-              release/*.yml
+              release/latest.yml
               release/*.blockmap
 
     runs-on: ${{ matrix.os }}
