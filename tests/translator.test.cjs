@@ -4,12 +4,14 @@ const {
   buildMessages,
   enrichTranslation,
   extractResponseText,
+  hasLikelyAbbreviation,
   isLikelyTechnicalText,
   isSingleEnglishWord,
   listOllamaModels,
   localEnglishIpa,
   normalizeBaseUrl,
   parseTranslationResult,
+  translateTechnicalText,
   translateText
 } = require("../src/lib/translator.cjs");
 
@@ -155,6 +157,60 @@ test("technical enrichment is only requested for likely IT text", () => {
   assert.equal(isLikelyTechnicalText("The event loop schedules callbacks."), true);
   assert.equal(isLikelyTechnicalText("后端开发使用依赖注入管理组件"), true);
   assert.equal(isLikelyTechnicalText("An interrupt vector maps hardware events."), true);
+});
+
+test("abbreviations trigger enrichment and preserve their full names", () => {
+  assert.equal(hasLikelyAbbreviation("CPU load"), true);
+  assert.equal(hasLikelyAbbreviation("plain sentence"), false);
+  const result = parseTranslationResult(
+    JSON.stringify({
+      translation: "中央处理器（CPU）",
+      abbreviations: [{ abbreviation: "CPU", fullName: "Central Processing Unit" }]
+    }),
+    "zh-CN",
+    "CPU"
+  );
+  assert.deepEqual(result.abbreviations, [
+    { abbreviation: "CPU", fullName: "Central Processing Unit" }
+  ]);
+});
+
+test("manual technical translation instructs the provider to use IT context", async () => {
+  const originalFetch = global.fetch;
+  let requestBody;
+  global.fetch = async (_url, init) => {
+    requestBody = JSON.parse(init.body);
+    return {
+      ok: true,
+      text: async () =>
+        JSON.stringify({
+          message: {
+            content: JSON.stringify({
+              sourceLanguage: "英语",
+              targetLanguage: "简体中文",
+              translation: "端口",
+              phonetic: "",
+              pronunciationText: "port",
+              isTechnical: true
+            })
+          }
+        })
+    };
+  };
+  try {
+    const result = await translateTechnicalText("port", {
+      provider: "ollama",
+      sourceLanguage: "en",
+      targetLanguage: "zh-CN",
+      ollamaUrl: "http://127.0.0.1:11434",
+      ollamaModel: "qwen3:8b"
+    });
+    assert.match(requestBody.messages[0].content, /按 IT 专业语境翻译/);
+    assert.equal(result.isTechnical, true);
+    assert.equal(result.needsEnrichment, true);
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 
 test("TranslateGemma single-word translations still trigger Qwen term analysis", async () => {

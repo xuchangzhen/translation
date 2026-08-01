@@ -34,6 +34,11 @@ interface TermItem {
   category: string;
 }
 
+interface AbbreviationItem {
+  abbreviation: string;
+  fullName: string;
+}
+
 interface TranslationResult {
   sourceLanguage: string;
   targetLanguage: string;
@@ -43,6 +48,7 @@ interface TranslationResult {
   isTechnical?: boolean;
   explanation: string;
   terms: TermItem[];
+  abbreviations: AbbreviationItem[];
   alternatives: string[];
   needsEnrichment?: boolean;
   cacheHit?: boolean;
@@ -106,6 +112,10 @@ interface LinguaApi {
     text: string,
     overrides?: Partial<AppSettings>
   ): Promise<TranslationResult>;
+  translateTechnical(
+    text: string,
+    overrides?: Partial<AppSettings>
+  ): Promise<TranslationResult>;
   enrichTranslation(
     text: string,
     translation: string,
@@ -113,6 +123,7 @@ interface LinguaApi {
   ): Promise<{
     explanation: string;
     terms: TermItem[];
+    abbreviations: AbbreviationItem[];
     alternatives: string[];
   }>;
   testProvider(

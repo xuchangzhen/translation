@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld("lingua", {
   testSpeech: (settings = {}) => ipcRenderer.invoke("speech:test", settings),
   translate: (text, overrides = {}) =>
     ipcRenderer.invoke("translation:translate", { text, overrides }),
+  translateTechnical: (text, overrides = {}) =>
+    ipcRenderer.invoke("translation:translate-technical", { text, overrides }),
   enrichTranslation: (text, translation, overrides = {}) =>
     ipcRenderer.invoke("translation:enrich", {
       text,

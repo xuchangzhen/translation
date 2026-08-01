@@ -26,6 +26,7 @@ const RESULT_SHAPE = {
   isTechnical: false,
   explanation: "",
   terms: [],
+  abbreviations: [],
   alternatives: []
 };
 
@@ -69,6 +70,18 @@ const ENRICHMENT_SCHEMA = {
         required: ["term", "translation", "definition", "category"]
       }
     },
+    abbreviations: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          abbreviation: { type: "string" },
+          fullName: { type: "string" }
+        },
+        required: ["abbreviation", "fullName"]
+      }
+    },
     alternatives: {
       type: "array",
       items: { type: "string" }
@@ -77,6 +90,7 @@ const ENRICHMENT_SCHEMA = {
   required: [
     "explanation",
     "terms",
+    "abbreviations",
     "alternatives"
   ]
 };
@@ -187,6 +201,15 @@ function parseTranslationResult(raw, targetLanguage, sourceText = "") {
             category: String(term.category || "IT")
           }))
       : [],
+    abbreviations: Array.isArray(parsed.abbreviations)
+      ? parsed.abbreviations
+          .filter((item) => item && item.abbreviation && item.fullName)
+          .slice(0, 4)
+          .map((item) => ({
+            abbreviation: String(item.abbreviation || "").trim(),
+            fullName: String(item.fullName || "").trim()
+          }))
+      : [],
     alternatives: Array.isArray(parsed.alternatives)
       ? parsed.alternatives.map(String).filter(Boolean)
       : []
@@ -219,10 +242,25 @@ function parseEnrichmentResult(raw) {
             category: String(term.category || "IT")
           }))
       : [],
+    abbreviations: Array.isArray(parsed.abbreviations)
+      ? parsed.abbreviations
+          .filter((item) => item && item.abbreviation && item.fullName)
+          .slice(0, 4)
+          .map((item) => ({
+            abbreviation: String(item.abbreviation || "").trim(),
+            fullName: String(item.fullName || "").trim()
+          }))
+      : [],
     alternatives: Array.isArray(parsed.alternatives)
       ? parsed.alternatives.map(String).filter(Boolean).slice(0, 2)
       : []
   };
+}
+
+function hasLikelyAbbreviation(text) {
+  return /\b(?:[A-Z]{2,}(?:[/-][A-Z0-9]+)*|[A-Z]+\d+[A-Z\d-]*)\b/.test(
+    String(text || "")
+  );
 }
 
 function isLikelyTechnicalText(text) {
@@ -257,13 +295,16 @@ function translateGemmaLanguage(language) {
   }[code] || { name: LANGUAGE_NAMES[code] || code, code };
 }
 
-function buildTranslateGemmaPrompt(text, settings) {
+function buildTranslateGemmaPrompt(text, settings, technicalMode = false) {
   const source = translateGemmaLanguage(
     detectSourceLanguage(text, settings.sourceLanguage)
   );
   const target = translateGemmaLanguage(settings.targetLanguage);
   return [
     `You are a professional ${source.name} (${source.code}) to ${target.name} (${target.code}) translator. Your goal is to accurately convey the meaning and nuances of the original ${source.name} text while adhering to ${target.name} grammar, vocabulary, and cultural sensitivities.`,
+    technicalMode
+      ? "Treat the text as software, hardware, networking, operations, or another IT professional context. Use precise established technical terminology; preserve identifiers and code."
+      : "",
     `Produce only the ${target.name} translation, without any additional explanations or commentary. Please translate the following ${source.name} text into ${target.name}:`,
     "",
     "",
@@ -271,7 +312,7 @@ function buildTranslateGemmaPrompt(text, settings) {
   ].join("\n");
 }
 
-function buildMessages(text, options) {
+function buildMessages(text, options, technicalMode = false) {
   const source = LANGUAGE_NAMES[options.sourceLanguage] || options.sourceLanguage;
   const target = LANGUAGE_NAMES[options.targetLanguage] || options.targetLanguage;
   const system = [
@@ -283,8 +324,11 @@ function buildMessages(text, options) {
     "仅当英文原文是一个单词时，phonetic 才返回该单词的标准 IPA；英文句子、短语、中文及其他语言一律返回空字符串。绝不能给中文译文标音。",
     "pronunciationText 必须是适合朗读的原文，不能填译文。",
     "isTechnical 表示文本是否涉及软件开发、前后端、嵌入式、运维、网络、数据库、AI 或其他 IT 专业语境。",
+    technicalMode
+      ? "用户已明确要求按 IT 专业语境翻译。必须采用准确、通行的技术术语，并将 isTechnical 设为 true。"
+      : "",
     "优先尽快返回简洁结果。"
-  ].join("\n");
+  ].filter(Boolean).join("\n");
   const user = `源语言：${source}\n目标语言：${target}\n待翻译文本：\n${text}`;
   return [
     { role: "system", content: system },
@@ -298,9 +342,10 @@ function buildEnrichmentMessages(text, translation, options) {
   const system = [
     "你负责补充 IT 翻译的技术语境，不要重复生成译文或音标。",
     "必须只输出合法 JSON，不要使用 Markdown。",
-    "字段仅包含 explanation, terms, alternatives。",
+    "字段仅包含 explanation, terms, abbreviations, alternatives。",
     "explanation 用目标语言说明原文中的技术内容在实际开发中做什么、典型场景和必要注意点，控制在 2 句话内。",
     "terms 只列真正的 IT 术语，最多 4 项；每项包含 term, translation, definition, category。",
+    "abbreviations 列出原文或译文中实际出现的缩写，最多 4 项；每项包含 abbreviation 和英文 fullName。只给出有把握的全称；没有缩写时返回空数组。",
     singleWordLookup
       ? "原文是单个英文词：先判断它是否具有软件、硬件、网络或其他 IT 专业含义；如果有，terms 必须包含这个原词及准确的技术定义，即使它在日常英语中也有普通含义；如果完全没有 IT 含义，返回空 explanation、空 terms 和空 alternatives。"
       : "",
@@ -368,8 +413,8 @@ async function fetchOllamaJson(settings, endpoint, init, timeoutMs) {
   throw lastError;
 }
 
-async function translateWithQwenOllama(text, settings) {
-  const messages = buildMessages(text, settings);
+async function translateWithQwenOllama(text, settings, technicalMode = false) {
+  const messages = buildMessages(text, settings, technicalMode);
   let payload;
   try {
     payload = await fetchOllamaJson(
@@ -404,7 +449,7 @@ async function translateWithQwenOllama(text, settings) {
   );
 }
 
-async function translateWithTranslateGemma(text, settings) {
+async function translateWithTranslateGemma(text, settings, technicalMode = false) {
   const sourceLanguage = detectSourceLanguage(text, settings.sourceLanguage);
   const payload = await fetchOllamaJson(
     settings,
@@ -417,7 +462,7 @@ async function translateWithTranslateGemma(text, settings) {
         messages: [
           {
             role: "user",
-            content: buildTranslateGemmaPrompt(text, settings)
+            content: buildTranslateGemmaPrompt(text, settings, technicalMode)
           }
         ],
         stream: false,
@@ -446,14 +491,17 @@ async function translateWithTranslateGemma(text, settings) {
         ? localEnglishIpa(text)
         : "",
     pronunciationText: text,
-    isTechnical: isLikelyTechnicalText(text) || isLikelyTechnicalText(translation)
+    isTechnical:
+      technicalMode ||
+      isLikelyTechnicalText(text) ||
+      isLikelyTechnicalText(translation)
   };
 }
 
-async function translateWithOllama(text, settings) {
+async function translateWithOllama(text, settings, technicalMode = false) {
   if (settings.useTranslateGemma === true) {
     try {
-      return await translateWithTranslateGemma(text, settings);
+      return await translateWithTranslateGemma(text, settings, technicalMode);
     } catch (error) {
       console.warn(
         `TranslateGemma unavailable, falling back to ${settings.ollamaModel}:`,
@@ -461,7 +509,7 @@ async function translateWithOllama(text, settings) {
       );
     }
   }
-  return translateWithQwenOllama(text, settings);
+  return translateWithQwenOllama(text, settings, technicalMode);
 }
 
 async function enrichWithOllama(text, translation, settings) {
@@ -586,9 +634,9 @@ async function warmOllama(settings) {
   return true;
 }
 
-async function translateWithOpenAI(text, settings, apiKey) {
+async function translateWithOpenAI(text, settings, apiKey, technicalMode = false) {
   if (!apiKey) throw new Error("请先在设置中填写 OpenAI API Key");
-  const messages = buildMessages(text, settings);
+  const messages = buildMessages(text, settings, technicalMode);
   const input = messages.map((message) => ({
     role: message.role,
     content: [{ type: "input_text", text: message.content }]
@@ -654,7 +702,7 @@ function decodeHtmlEntities(value) {
     .replaceAll("&amp;", "&");
 }
 
-async function translateWithGoogle(text, settings, apiKey) {
+async function translateWithGoogle(text, settings, apiKey, technicalMode = false) {
   if (!apiKey) throw new Error("请先在设置中填写 Google Cloud API Key");
   const body = {
     q: text,
@@ -693,11 +741,14 @@ async function translateWithGoogle(text, settings, apiKey) {
         ? localEnglishIpa(text)
         : "",
     pronunciationText: text,
-    isTechnical: isLikelyTechnicalText(text) || isLikelyTechnicalText(translation)
+    isTechnical:
+      technicalMode ||
+      isLikelyTechnicalText(text) ||
+      isLikelyTechnicalText(translation)
   };
 }
 
-async function translateWithCompatible(text, settings, apiKey) {
+async function translateWithCompatible(text, settings, apiKey, technicalMode = false) {
   const headers = { "Content-Type": "application/json" };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
   const payload = await fetchJson(
@@ -707,7 +758,7 @@ async function translateWithCompatible(text, settings, apiKey) {
       headers,
       body: JSON.stringify({
         model: settings.compatibleModel,
-        messages: buildMessages(text, settings),
+        messages: buildMessages(text, settings, technicalMode),
         temperature: 0.1,
         response_format: { type: "json_object" }
       })
@@ -913,9 +964,9 @@ async function runCodexStructured(messages, schema, settings, prefix) {
   }
 }
 
-async function translateWithCodex(text, settings) {
+async function translateWithCodex(text, settings, technicalMode = false) {
   const output = await runCodexStructured(
-    buildMessages(text, settings),
+    buildMessages(text, settings, technicalMode),
     TRANSLATION_SCHEMA,
     settings,
     "translation"
@@ -933,7 +984,12 @@ async function enrichWithCodex(text, translation, settings) {
   return parseEnrichmentResult(output);
 }
 
-async function translateText(text, settings, apiKey = "") {
+async function translateTextWithMode(
+  text,
+  settings,
+  apiKey = "",
+  technicalMode = false
+) {
   const normalizedText = String(text || "").trim();
   if (!normalizedText) throw new Error("请输入或选择要翻译的内容");
   if (normalizedText.length > 12000) {
@@ -943,38 +999,65 @@ async function translateText(text, settings, apiKey = "") {
   let result;
   switch (settings.provider) {
     case "codex":
-      result = await translateWithCodex(normalizedText, settings);
+      result = await translateWithCodex(normalizedText, settings, technicalMode);
       break;
     case "openai":
-      result = await translateWithOpenAI(normalizedText, settings, apiKey);
+      result = await translateWithOpenAI(
+        normalizedText,
+        settings,
+        apiKey,
+        technicalMode
+      );
       break;
     case "google":
-      result = await translateWithGoogle(normalizedText, settings, apiKey);
+      result = await translateWithGoogle(
+        normalizedText,
+        settings,
+        apiKey,
+        technicalMode
+      );
       break;
     case "compatible":
-      result = await translateWithCompatible(normalizedText, settings, apiKey);
+      result = await translateWithCompatible(
+        normalizedText,
+        settings,
+        apiKey,
+        technicalMode
+      );
       break;
     case "ollama":
-      result = await translateWithOllama(normalizedText, settings);
+      result = await translateWithOllama(normalizedText, settings, technicalMode);
       break;
     default:
       throw new Error(`不支持的翻译服务：${settings.provider}`);
   }
   return {
     ...result,
+    isTechnical: technicalMode || result.isTechnical,
     needsEnrichment:
+      technicalMode ||
       result.isTechnical === true ||
       isSingleEnglishWord(normalizedText) ||
       isLikelyTechnicalText(normalizedText) ||
-      isLikelyTechnicalText(result.translation)
+      isLikelyTechnicalText(result.translation) ||
+      hasLikelyAbbreviation(normalizedText) ||
+      hasLikelyAbbreviation(result.translation)
   };
+}
+
+async function translateText(text, settings, apiKey = "") {
+  return translateTextWithMode(text, settings, apiKey, false);
+}
+
+async function translateTechnicalText(text, settings, apiKey = "") {
+  return translateTextWithMode(text, settings, apiKey, true);
 }
 
 async function enrichTranslation(text, translation, settings, apiKey = "") {
   const normalizedText = String(text || "").trim();
   const normalizedTranslation = String(translation || "").trim();
   if (!normalizedText || !normalizedTranslation) {
-    return { explanation: "", terms: [], alternatives: [] };
+    return { explanation: "", terms: [], abbreviations: [], alternatives: [] };
   }
   switch (settings.provider) {
     case "codex":
@@ -1054,6 +1137,7 @@ module.exports = {
   codexModels,
   extractResponseText,
   enrichTranslation,
+  hasLikelyAbbreviation,
   isLikelyTechnicalText,
   isSingleEnglishWord,
   listOllamaModels,
@@ -1061,6 +1145,7 @@ module.exports = {
   normalizeBaseUrl,
   parseTranslationResult,
   testProvider,
+  translateTechnicalText,
   translateText,
   warmOllama
 };

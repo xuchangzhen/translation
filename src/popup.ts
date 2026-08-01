@@ -104,6 +104,7 @@ function showError(message: string, source = "selection") {
           pronunciationText: "",
           explanation: message,
           terms: [],
+          abbreviations: [],
           alternatives: []
         }
       });
@@ -158,6 +159,7 @@ function renderResult(result: TranslationResult, source: string) {
     currentTargetLanguage
   );
   const terms = result.terms.slice(0, 6);
+  const abbreviations = result.abbreviations || [];
   const sourceNeedsToggle =
     sourceText.length > 110 || sourceText.split(/\r?\n/).length > 3;
   const sourceMarkup = `
@@ -213,6 +215,18 @@ function renderResult(result: TranslationResult, source: string) {
       : result.enrichmentFailed
         ? `<section class="popup-section popup-enrichment-failed"><div class="popup-section-heading"><h3>${isSingleEnglishWord(sourceText) ? "名词解析" : "IT 行业解释"}</h3></div><p class="popup-section-copy">本次技术解释生成失败；译文不受影响，可重新触发翻译后重试。</p></section>`
         : "";
+  const abbreviationMarkup = abbreviations.length
+    ? `<section class="popup-section">
+        <div class="popup-section-heading"><h3>缩写全称 <span>${abbreviations.length}</span></h3></div>
+        <div class="popup-terms">
+          ${abbreviations
+            .map(
+              (item) => `<article><div><strong>${escapeHtml(item.abbreviation)}</strong></div><p><b>${escapeHtml(item.fullName)}</b></p></article>`
+            )
+            .join("")}
+        </div>
+      </section>`
+    : "";
   const phonetic = result.phonetic && isSingleEnglishWord(sourceText)
     ? `<div class="popup-phonetic"><div class="popup-phonetic-text"><small>英文音标</small><span>${escapeHtml(result.phonetic)}</span></div></div>`
     : "";
@@ -234,9 +248,11 @@ function renderResult(result: TranslationResult, source: string) {
       ${phonetic}
       ${explanation}
       ${termMarkup}
+      ${abbreviationMarkup}
     </div>
     <footer class="popup-footer">
       <button id="copy-result" class="popup-secondary">${icon("copy")}复制</button>
+      ${!result.isTechnical ? '<button id="popup-technical-translate" class="popup-secondary">按技术语境翻译</button>' : ""}
       <button id="expand-result" class="popup-primary">${icon("expand")}在主窗口展开</button>
     </footer>`,
     source
@@ -250,6 +266,11 @@ function renderResult(result: TranslationResult, source: string) {
   document.querySelector("#expand-result")?.addEventListener("click", () => {
     void window.lingua.openPopupInMain({ text: sourceText, result });
   });
+  document
+    .querySelector("#popup-technical-translate")
+    ?.addEventListener("click", () => {
+      void translatePopupAsTechnical(source);
+    });
   document
     .querySelector("#popup-target-language")
     ?.addEventListener("change", (event) => {
@@ -289,6 +310,25 @@ function renderResult(result: TranslationResult, source: string) {
     button.disabled = false;
   });
   resizeSoon();
+}
+
+async function translatePopupAsTechnical(source: string) {
+  const text = sourceText;
+  if (!text) return;
+  showLoading("正在按技术语境重新翻译…", source);
+  try {
+    const result = await window.lingua.translateTechnical(text, {
+      targetLanguage: currentTargetLanguage
+    });
+    if (sourceText !== text) return;
+    renderResult(result, source);
+    if (result.needsEnrichment) {
+      void enrichPopupResult(text, result, source, currentTargetLanguage);
+    }
+  } catch (error) {
+    if (sourceText !== text) return;
+    showError(error instanceof Error ? error.message : String(error), source);
+  }
 }
 
 async function retranslatePopup(targetLanguage: string, source: string) {

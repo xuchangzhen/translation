@@ -30,6 +30,7 @@ const {
   enrichTranslation,
   listOllamaModels,
   testProvider,
+  translateTechnicalText,
   translateText,
   warmOllama
 } = require("./lib/translator.cjs");
@@ -1261,6 +1262,10 @@ function registerIpc() {
     );
     cacheWrite(enrichmentCache, key, result, 80);
     return result;
+  });
+  ipcMain.handle("translation:translate-technical", async (_event, payload) => {
+    const settings = { ...store.data, ...(payload?.overrides || {}) };
+    return translateTechnicalText(payload?.text, settings, store.apiKey());
   });
   ipcMain.handle("translation:test-provider", async (_event, patch) => {
     const settings = { ...store.data, ...(patch || {}) };

@@ -1,6 +1,6 @@
 {
   "name": "translation",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "private": true,
   "description": "跨平台全局划词与截图翻译工具",
   "main": "src/main.cjs",
@@ -67,6 +67,9 @@
     "mac": {
       "category": "public.app-category.productivity",
       "artifactName": "translation-${version}-${arch}-mac.${ext}",
+      "forceCodeSigning": true,
+      "hardenedRuntime": true,
+      "notarize": true,
       "target": [
         "dmg",
         "zip"

@@ -546,6 +546,26 @@ kbd {
   font-weight: 700;
 }
 
+.manual-technical-button {
+  border: 1px solid #c9e3d6;
+  border-radius: 8px;
+  background: var(--green-soft);
+  color: var(--green);
+  padding: 5px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.manual-technical-button:hover {
+  background: #d9eee4;
+}
+
+.manual-technical-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .mini-action.busy {
   opacity: 0.55;
 }
@@ -656,6 +676,23 @@ kbd {
   margin-top: 5px;
   color: var(--coral);
   font-weight: 700;
+}
+
+.abbreviation-list {
+  display: grid;
+  gap: 7px;
+}
+
+.abbreviation-list p {
+  margin: 0;
+  color: #515154;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.abbreviation-list strong {
+  color: var(--coral);
+  font-family: "Source Sans 3 Variable", "Noto Sans SC Variable", sans-serif;
 }
 
 .result-error {

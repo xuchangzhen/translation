@@ -906,6 +906,7 @@ function showResultError(message: string) {
 function renderResult(result: TranslationResult) {
   const container = document.querySelector<HTMLDivElement>("#result-content")!;
   container.replaceChildren();
+  const abbreviations = result.abbreviations || [];
 
   const heading = document.createElement("div");
   heading.className = "result-heading";
@@ -926,6 +927,18 @@ function renderResult(result: TranslationResult) {
       setStatus("译文已复制");
     })
   );
+  if (!result.isTechnical) {
+    const technicalButton = document.createElement("button");
+    technicalButton.className = "manual-technical-button";
+    technicalButton.textContent = "按技术语境翻译";
+    technicalButton.title = "按软件、硬件、网络等技术语境重新翻译";
+    technicalButton.addEventListener("click", () => {
+      const sourceText =
+        document.querySelector<HTMLTextAreaElement>("#source-text")?.value.trim() || "";
+      void translateCurrentAsTechnical(sourceText, technicalButton);
+    });
+    actions.prepend(technicalButton);
+  }
   heading.append(label, actions);
 
   const translation = document.createElement("p");
@@ -1014,10 +1027,62 @@ function renderResult(result: TranslationResult) {
     container.append(section);
   }
 
+  if (abbreviations.length) {
+    const section = document.createElement("section");
+    section.className = "result-section abbreviation-section";
+    const title = document.createElement("h3");
+    title.textContent = "缩写全称";
+    const list = document.createElement("div");
+    list.className = "abbreviation-list";
+    abbreviations.forEach((item) => {
+      const row = document.createElement("p");
+      const abbreviation = document.createElement("strong");
+      abbreviation.textContent = item.abbreviation;
+      row.append(abbreviation, document.createTextNode(` · ${item.fullName}`));
+      list.append(row);
+    });
+    section.append(title, list);
+    container.append(section);
+  }
+
   if (result.alternatives.length) {
     container.append(resultSection("其他表达", result.alternatives.join(" · ")));
   }
   container.classList.remove("hidden");
+}
+
+async function translateCurrentAsTechnical(
+  sourceText: string,
+  button: HTMLButtonElement
+) {
+  if (!sourceText || isTranslating) return;
+  button.disabled = true;
+  button.textContent = "技术翻译中…";
+  setStatus("正在按技术语境重新翻译…");
+  try {
+    const sourceLanguage =
+      document.querySelector<HTMLSelectElement>("#source-language")?.value;
+    const targetLanguage =
+      document.querySelector<HTMLSelectElement>("#target-language")?.value;
+    const result = await window.lingua.translateTechnical(sourceText, {
+      sourceLanguage,
+      targetLanguage
+    });
+    const currentText =
+      document.querySelector<HTMLTextAreaElement>("#source-text")?.value.trim();
+    if (currentText !== sourceText) return;
+    lastResult = result;
+    lastTranslatedText = sourceText;
+    renderResult(result);
+    setStatus("已按技术语境重新翻译");
+    if (result.needsEnrichment) {
+      void enrichCurrentResult(sourceText, result);
+    }
+  } catch (error) {
+    setStatus(`技术语境翻译失败：${humanizeError(error)}`, true);
+    button.disabled = false;
+    button.textContent = "按技术语境翻译";
+  }
 }
 
 function actionButton(
