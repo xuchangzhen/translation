@@ -17,6 +17,7 @@ interface AppSettings {
   compatibleModel: string;
   codexPath: string;
   codexModel: string;
+  useThinking: boolean;
   speechProvider: "mambo" | "system";
   mamboUrl: string;
   mamboRoot: string;

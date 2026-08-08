@@ -4,7 +4,7 @@ const path = require("node:path");
 const { safeStorage } = require("electron");
 
 const DEFAULT_SETTINGS = Object.freeze({
-  settingsSchemaVersion: 3,
+  settingsSchemaVersion: 4,
   provider: "ollama",
   sourceLanguage: "auto",
   targetLanguage: "zh-CN",
@@ -21,6 +21,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   compatibleModel: "local-model",
   codexPath: "",
   codexModel: "",
+  useThinking: false,
   speechProvider: "mambo",
   mamboUrl: "http://127.0.0.1:9880",
   mamboRoot: path.join(
@@ -133,6 +134,7 @@ class SettingsStore {
       "compatibleModel",
       "codexPath",
       "codexModel",
+      "useThinking",
       "speechProvider",
       "mamboUrl",
       "mamboRoot",

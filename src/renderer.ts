@@ -290,6 +290,10 @@ function settingsMarkup() {
               <span id="codex-login-result"></span>
             </div>
           </div>
+          <label id="thinking-setting" class="toggle-row span-2">
+            <span><strong>翻译时启用模型思考</strong><small id="thinking-setting-help"></small></span>
+            <input id="setting-use-thinking" type="checkbox" ${settings.useThinking ? "checked" : ""}>
+          </label>
           <label id="api-key-field" class="field span-2">
             <span>API Key ${settings.apiKeyConfigured ? '<em class="saved-badge">已安全保存</em>' : ""}</span>
             <div class="input-action">
@@ -588,6 +592,18 @@ function refreshProviderFields() {
   });
   const apiKeyField = document.querySelector<HTMLElement>("#api-key-field");
   if (apiKeyField) apiKeyField.hidden = provider === "ollama" || provider === "codex";
+  const thinkingSetting = document.querySelector<HTMLElement>("#thinking-setting");
+  const thinkingHelp = document.querySelector<HTMLElement>("#thinking-setting-help");
+  if (thinkingSetting) thinkingSetting.hidden = provider === "google";
+  if (thinkingHelp) {
+    thinkingHelp.textContent = {
+      ollama: "关闭时会向 Ollama 发送 think: false，避免 Qwen 等模型进行思考并降低延迟。",
+      openai: "关闭时会使用 Responses API 的 reasoning.effort=none；开启时使用 low。",
+      compatible: "会通过 reasoning_effort 请求关闭；部分兼容服务若不支持该参数，可能会忽略它。",
+      codex: "关闭时 Codex 使用 none；开启时使用 low。",
+      google: "Google Cloud Translation 不使用模型思考。"
+    }[provider] || "";
+  }
 }
 
 function refreshSpeechFields() {
@@ -1345,6 +1361,8 @@ function collectSettings(): Partial<AppSettings> {
       document.querySelector<HTMLInputElement>("#setting-codex-path")!.value.trim(),
     codexModel:
       document.querySelector<HTMLSelectElement>("#setting-codex-model")!.value.trim(),
+    useThinking:
+      document.querySelector<HTMLInputElement>("#setting-use-thinking")!.checked,
     speechProvider:
       document.querySelector<HTMLSelectElement>("#setting-speech-provider")!
         .value as AppSettings["speechProvider"],

@@ -354,6 +354,80 @@ test("Ollama short translation disables thinking and keeps the model warm", asyn
   }
 });
 
+test("Ollama sends the selected thinking preference", async () => {
+  const originalFetch = global.fetch;
+  let requestBody;
+  global.fetch = async (_url, init) => {
+    requestBody = JSON.parse(init.body);
+    return {
+      ok: true,
+      text: async () =>
+        JSON.stringify({
+          message: {
+            content: JSON.stringify({
+              sourceLanguage: "英语",
+              targetLanguage: "简体中文",
+              translation: "你好",
+              phonetic: "",
+              pronunciationText: "Hello",
+              isTechnical: false
+            })
+          }
+        })
+    };
+  };
+  try {
+    await translateText("Hello", {
+      provider: "ollama",
+      sourceLanguage: "en",
+      targetLanguage: "zh-CN",
+      ollamaUrl: "http://127.0.0.1:11434",
+      ollamaModel: "qwen3:8b",
+      useThinking: true
+    });
+    assert.equal(requestBody.think, true);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("OpenAI Responses uses none or low reasoning according to the preference", async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+  global.fetch = async (_url, init) => {
+    requests.push(JSON.parse(init.body));
+    return {
+      ok: true,
+      text: async () =>
+        JSON.stringify({
+          output_text: JSON.stringify({
+            sourceLanguage: "英语",
+            targetLanguage: "简体中文",
+            translation: "你好",
+            phonetic: "",
+            pronunciationText: "Hello",
+            isTechnical: false
+          })
+        })
+    };
+  };
+  const baseSettings = {
+    provider: "openai",
+    sourceLanguage: "en",
+    targetLanguage: "zh-CN",
+    openaiBaseUrl: "https://api.openai.com/v1",
+    openaiModel: "gpt-5.6-luna"
+  };
+  try {
+    await translateText("Hello", { ...baseSettings, useThinking: false }, "test-key");
+    await translateText("Hello", { ...baseSettings, useThinking: true }, "test-key");
+    assert.equal(requests[0].reasoning.effort, "none");
+    assert.equal(requests[1].reasoning.effort, "low");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("TranslateGemma handles the core translation while Qwen remains separate", async () => {
   const originalFetch = global.fetch;
   let requestBody;

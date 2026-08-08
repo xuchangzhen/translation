@@ -428,7 +428,7 @@ async function translateWithQwenOllama(text, settings, technicalMode = false) {
           messages,
           stream: false,
           format: TRANSLATION_SCHEMA,
-          think: false,
+          think: settings.useThinking === true,
           keep_alive: "30m",
           options: {
             temperature: 0,
@@ -466,7 +466,7 @@ async function translateWithTranslateGemma(text, settings, technicalMode = false
           }
         ],
         stream: false,
-        think: false,
+        think: settings.useThinking === true,
         keep_alive: "30m",
         options: {
           temperature: 0,
@@ -526,7 +526,7 @@ async function enrichWithOllama(text, translation, settings) {
           messages: buildEnrichmentMessages(text, translation, settings),
           stream: false,
           format: ENRICHMENT_SCHEMA,
-          think: false,
+          think: settings.useThinking === true,
           keep_alive: "30m",
           options: {
             temperature: 0,
@@ -652,7 +652,7 @@ async function translateWithOpenAI(text, settings, apiKey, technicalMode = false
       body: JSON.stringify({
         model: settings.openaiModel,
         input,
-        reasoning: { effort: "none" },
+        reasoning: { effort: settings.useThinking === true ? "low" : "none" },
         text: { verbosity: "low" },
         max_output_tokens: 700
       })
@@ -684,7 +684,7 @@ async function enrichWithOpenAI(text, translation, settings, apiKey) {
       body: JSON.stringify({
         model: settings.openaiModel,
         input,
-        reasoning: { effort: "none" },
+        reasoning: { effort: settings.useThinking === true ? "low" : "none" },
         text: { verbosity: "low" },
         max_output_tokens: 900
       })
@@ -760,6 +760,9 @@ async function translateWithCompatible(text, settings, apiKey, technicalMode = f
         model: settings.compatibleModel,
         messages: buildMessages(text, settings, technicalMode),
         temperature: 0.1,
+        // OpenAI-compatible services that implement this extension (including
+        // many local Qwen servers) use it to control hidden reasoning.
+        reasoning_effort: settings.useThinking === true ? "low" : "none",
         response_format: { type: "json_object" }
       })
     }
@@ -783,6 +786,7 @@ async function enrichWithCompatible(text, translation, settings, apiKey) {
         model: settings.compatibleModel,
         messages: buildEnrichmentMessages(text, translation, settings),
         temperature: 0.1,
+        reasoning_effort: settings.useThinking === true ? "low" : "none",
         response_format: { type: "json_object" }
       })
     }
@@ -943,7 +947,7 @@ async function runCodexStructured(messages, schema, settings, prefix) {
     "--ignore-user-config",
     "--ignore-rules",
     "--config",
-    'model_reasoning_effort="low"',
+    `model_reasoning_effort="${settings.useThinking === true ? "low" : "none"}"`,
     "--output-schema",
     schemaPath,
     "--output-last-message",

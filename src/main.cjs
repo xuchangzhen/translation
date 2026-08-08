@@ -164,11 +164,12 @@ function cacheWrite(cache, key, value, maximum) {
 }
 
 function activeModel(settings) {
+  const thinking = settings.useThinking === true;
   return {
-    ollama: `${settings.ollamaUrl}|${settings.ollamaTranslationModel}|${settings.ollamaModel}|${settings.useTranslateGemma}`,
-    openai: `${settings.openaiBaseUrl}|${settings.openaiModel}`,
-    compatible: `${settings.compatibleBaseUrl}|${settings.compatibleModel}`,
-    codex: `${settings.codexPath}|${settings.codexModel}`
+    ollama: `${settings.ollamaUrl}|${settings.ollamaTranslationModel}|${settings.ollamaModel}|${settings.useTranslateGemma}|${thinking}`,
+    openai: `${settings.openaiBaseUrl}|${settings.openaiModel}|${thinking}`,
+    compatible: `${settings.compatibleBaseUrl}|${settings.compatibleModel}|${thinking}`,
+    codex: `${settings.codexPath}|${settings.codexModel}|${thinking}`
   }[settings.provider] || settings.provider;
 }
 

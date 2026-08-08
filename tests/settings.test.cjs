@@ -71,3 +71,19 @@ test("saves settings through a temporary file and keeps the previous backup", ()
     fs.rmSync(userDataPath, { recursive: true, force: true });
   }
 });
+
+test("persists the translation thinking preference", () => {
+  const userDataPath = fs.mkdtempSync(
+    path.join(os.tmpdir(), "translation-settings-")
+  );
+  try {
+    const store = new SettingsStore(userDataPath);
+    assert.equal(store.data.useThinking, false);
+
+    store.update({ useThinking: true });
+    const reloaded = new SettingsStore(userDataPath);
+    assert.equal(reloaded.data.useThinking, true);
+  } finally {
+    fs.rmSync(userDataPath, { recursive: true, force: true });
+  }
+});
