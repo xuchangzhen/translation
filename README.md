@@ -104,17 +104,7 @@ http://<Mac-mini-局域网-IP>:11434
 
 ## 应用内更新
 
-设置页会显示当前版本。点击“检查更新”后可直接下载，完成后点击“立即安装”。自动更新读取 GitHub Release 中由 `electron-builder` 生成的更新元数据；旧版 Release 缺少元数据时只显示简短兼容提示，不会暴露内部错误栈。推送 `v*` 标签会同时构建 macOS、Windows 安装包并创建 Release。Windows 使用 NSIS 增量更新；macOS 发布会强制使用 Apple Developer ID 签名并完成公证，避免 ShipIt 拒绝未验证的更新包。
-
-首次启用 macOS 发布前，在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 配置：
-
-- `MAC_CSC_LINK`：base64 编码的 **Developer ID Application** `.p12` 证书。
-- `MAC_CSC_KEY_PASSWORD`：导出该证书时设置的密码。
-- `APPLE_API_KEY_BASE64`：base64 编码的 App Store Connect API `.p8` 密钥文件。
-- `APPLE_API_KEY_ID`：该 API 密钥的 Key ID。
-- `APPLE_API_ISSUER`：App Store Connect 的 Issuer ID。
-
-GitHub Actions 会在发布前验证应用签名和公证；缺少或失效的凭据会使 macOS 构建失败，避免将无法应用内更新的 ZIP 上传到 Release。
+设置页会显示当前版本。点击“检查更新”后可直接下载，完成后点击“立即安装”。自动更新读取 GitHub Release 中由 `electron-builder` 生成的更新元数据；旧版 Release 缺少元数据时只显示简短兼容提示，不会暴露内部错误栈。推送 `v*` 标签会同时构建 macOS、Windows 安装包并创建 Release。当前 macOS 发布沿用免签名构建路径，不依赖 Apple Developer 凭据；如后续配置 Developer ID 签名和 Apple 公证，应在启用前完成完整的签名与更新验证。
 
 ## 验证与打包
 
