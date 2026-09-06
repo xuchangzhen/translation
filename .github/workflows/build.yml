@@ -129,7 +129,7 @@ jobs:
           LINGUABRIDGE_ANDROID_BASE_URL: https://memory.xuchangzhen968.top
         run: |
           metadata="android-memory/app/build/outputs/apk/release/output-metadata.json"
-          version_name="$(node -e 'const m=require(process.argv[1]); process.stdout.write(String(m.elements[0].versionName))' "$metadata")"
+          version_name="$(node -e 'const fs=require("node:fs"); const m=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.stdout.write(String(m.elements[0].versionName))' "$metadata")"
           mkdir -p release
           cp android-memory/app/build/outputs/apk/release/app-release.apk "release/linguabridge-memory-$version_name.apk"
           node scripts/create-android-update-manifest.mjs \
