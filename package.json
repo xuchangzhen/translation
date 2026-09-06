@@ -1,6 +1,6 @@
 {
   "name": "translation",
-  "version": "0.5.8",
+  "version": "0.7.0",
   "private": true,
   "description": "跨平台全局划词与截图翻译工具",
   "main": "src/main.cjs",
@@ -10,7 +10,12 @@
   "scripts": {
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/*.test.cjs",
+    "test:desktop": "node --test tests/*.test.cjs",
+    "test:server": "pnpm --dir sync-server test",
+    "test": "pnpm test:desktop && pnpm test:server",
+    "build:android": "cd android-memory && ./gradlew testDebugUnitTest assembleDebug",
+    "build:android:release": "./scripts/build-android-release.sh",
+    "pair:android": "electron scripts/pair-connected-android.cjs",
     "build:renderer": "vite build",
     "build": "pnpm typecheck && pnpm test && pnpm build:renderer && electron-builder --publish never",
     "build:mac": "pnpm typecheck && pnpm test && pnpm build:renderer && electron-builder --mac --arm64 --publish never",
@@ -19,12 +24,17 @@
   "dependencies": {
     "@fontsource-variable/noto-sans-sc": "5.3.0",
     "@fontsource-variable/source-sans-3": "5.3.0",
+    "@fontsource/charis-sil": "5.3.0",
     "electron-updater": "^6.8.9",
+    "markdown-it": "15.0.1",
     "phonemize": "2.0.0",
+    "qrcode": "1.5.4",
     "tesseract.js": "^6.0.1",
     "uiohook-napi": "1.5.5"
   },
   "devDependencies": {
+    "@types/markdown-it": "14.2.0",
+    "@types/qrcode": "1.5.5",
     "concurrently": "^9.2.1",
     "cross-env": "^10.0.0",
     "electron": "^37.2.6",
@@ -63,10 +73,15 @@
       }
     ],
     "generateUpdatesFilesForAllChannels": true,
+    "afterPack": "scripts/after-pack.cjs",
     "icon": "build/icon.png",
     "mac": {
       "category": "public.app-category.productivity",
       "artifactName": "translation-${version}-${arch}-mac.${ext}",
+      "identity": null,
+      "forceCodeSigning": false,
+      "hardenedRuntime": false,
+      "notarize": false,
       "target": [
         "dmg",
         "zip"

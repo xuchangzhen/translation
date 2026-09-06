@@ -5,6 +5,11 @@ coverage/
 *.log
 .DS_Store
 .vite/
+/android-memory/.gradle/
+/android-memory/build/
+/android-memory/app/build/
+/sync-server/.env
+/sync-server/deployment.receipt.env
 /.env
 /.env.*
 !/.env.example

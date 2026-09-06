@@ -1,5 +1,6 @@
 import "./styles.css";
 import { speakText } from "./speech";
+import { renderTranslatedText } from "./markdown";
 
 const root = document.querySelector<HTMLDivElement>("#popup-root")!;
 const POPUP_TARGET_LANGUAGES = [
@@ -244,7 +245,7 @@ function renderResult(result: TranslationResult, source: string) {
           <button id="speak-result" class="popup-icon-button popup-speech-button" title="朗读译文">${icon("speaker")}<span>朗读译文</span></button>
         </div>
       </div>
-      <p class="popup-translation">${escapeHtml(result.translation)}</p>
+      <div id="popup-translation" class="popup-translation"></div>
       ${phonetic}
       ${explanation}
       ${termMarkup}
@@ -258,6 +259,24 @@ function renderResult(result: TranslationResult, source: string) {
     source
   );
   bindCommon();
+  const translated = document.querySelector<HTMLElement>("#popup-translation");
+  if (translated) {
+    renderTranslatedText(
+      translated,
+      result.translation,
+      sourceText,
+      result.sourceFormat
+    );
+    translated.addEventListener("click", (event) => {
+      const anchor = (event.target as Element | null)?.closest<HTMLAnchorElement>("a");
+      if (!anchor) return;
+      event.preventDefault();
+      void window.lingua.openExternal(anchor.href);
+    });
+  }
+  if (sourceText && result.translation) {
+    void window.lingua.captureMemory(sourceText, result).catch(() => {});
+  }
   document.querySelector("#copy-result")?.addEventListener("click", async () => {
     await window.lingua.copyText(result.translation);
     const button = document.querySelector<HTMLButtonElement>("#copy-result")!;

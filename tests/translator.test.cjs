@@ -7,9 +7,12 @@ const {
   hasLikelyAbbreviation,
   isLikelyTechnicalText,
   isSingleEnglishWord,
+  looksLikeMarkdown,
   listOllamaModels,
   localEnglishIpa,
+  maskMarkdownLiterals,
   normalizeBaseUrl,
+  normalizeIpa,
   parseTranslationResult,
   translateTechnicalText,
   translateText
@@ -74,6 +77,7 @@ test("parses fenced JSON and normalizes arrays", () => {
   );
   assert.equal(result.translation, "网关");
   assert.equal(result.targetLanguage, "zh-CN");
+  assert.equal(result.sourceFormat, "plain");
   assert.equal(result.terms[0].category, "IT");
   assert.deepEqual(result.alternatives, []);
 });
@@ -88,6 +92,28 @@ test("translation prompt requests only the fast core result", () => {
   assert.match(messages[0].content, /不生成解释/);
   assert.match(messages[0].content, /英文原文/);
   assert.match(messages[1].content, /event loop/);
+});
+
+test("Markdown input requests structure preservation", () => {
+  const source = "# Setup\n\n- Run `pnpm test`\n- Read [docs](https://example.com)";
+  const messages = buildMessages(source, {
+    sourceLanguage: "en",
+    targetLanguage: "zh-CN"
+  });
+  assert.equal(looksLikeMarkdown(source), true);
+  assert.match(messages[0].content, /保留原有标题层级/);
+  assert.match(messages[1].content, /输入格式：Markdown/);
+});
+
+test("Markdown code and link targets can be protected and restored", () => {
+  const source = "Use `pnpm test` and [the docs](https://example.com/a?q=1).\n```js\nrun()\n```";
+  const masked = maskMarkdownLiterals(source);
+  assert.doesNotMatch(masked.text, /pnpm test|https:\/\/example/);
+  assert.equal(masked.restore(masked.text), source);
+});
+
+test("IPA output is normalized to phonemic slashes", () => {
+  assert.equal(normalizeIpa("IPA: [həˈloʊ] 你好"), "/həˈloʊ/");
 });
 
 test("English IPA and pronunciation always refer to the English source", () => {
@@ -453,6 +479,37 @@ test("TranslateGemma handles the core translation while Qwen remains separate", 
     assert.equal(requestBody.model, "translategemma:4b");
     assert.match(requestBody.messages[0].content, /English \(en\) to Chinese \(Simplified\) \(zh-Hans\)/);
     assert.equal(result.needsEnrichment, true);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("TranslateGemma preserves Markdown fences in translated output", async () => {
+  const originalFetch = global.fetch;
+  let requestBody;
+  global.fetch = async (_url, init) => {
+    requestBody = JSON.parse(init.body);
+    return {
+      ok: true,
+      text: async () =>
+        JSON.stringify({
+          message: { content: "# 安装\n\n```sh\npnpm install\n```" }
+        })
+    };
+  };
+  try {
+    const result = await translateText("# Install\n\n```sh\npnpm install\n```", {
+      provider: "ollama",
+      sourceLanguage: "en",
+      targetLanguage: "zh-CN",
+      ollamaUrl: "http://127.0.0.1:11434",
+      ollamaModel: "qwen3:8b",
+      ollamaTranslationModel: "translategemma:4b",
+      useTranslateGemma: true
+    });
+    assert.equal(result.sourceFormat, "markdown");
+    assert.match(result.translation, /```sh\npnpm install\n```/);
+    assert.match(requestBody.messages[0].content, /input is Markdown/);
   } finally {
     global.fetch = originalFetch;
   }

@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: memory_sync
+      POSTGRES_USER: memory_sync
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memory_sync"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  relay:
+    build: .
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: memory_sync
+      PGUSER: memory_sync
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      SYNC_REGISTRATION_KEY: ${SYNC_REGISTRATION_KEY}
+      PORT: 8787
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      SYNC_DOMAIN: ${SYNC_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - relay
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,15 @@
+[Unit]
+Description=Mirror the latest LinguaBridge Android release
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/linguabridge-android-mirror
+User=root
+Group=root
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/linguabridge-memory/android

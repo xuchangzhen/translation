@@ -7,6 +7,17 @@ contextBridge.exposeInMainWorld("lingua", {
     ipcRenderer.invoke("shortcut:recording", active),
   clearApiKey: () => ipcRenderer.invoke("settings:clear-api-key"),
   copyText: (text) => ipcRenderer.invoke("clipboard:write", text),
+  getMemorySyncStatus: () => ipcRenderer.invoke("memory:sync-status"),
+  captureMemory: (text, result) =>
+    ipcRenderer.invoke("memory:capture", { text, result }),
+  testAndroidMemory: (pairingValue = "") =>
+    ipcRenderer.invoke("memory:test-android", pairingValue),
+  provisionAndroidMemory: (serverUrl, registrationKey) =>
+    ipcRenderer.invoke("memory:provision-android", { serverUrl, registrationKey }),
+  getAndroidMemoryPairing: () =>
+    ipcRenderer.invoke("memory:get-phone-pairing"),
+  clearAndroidMemoryPairing: () =>
+    ipcRenderer.invoke("memory:clear-pairing"),
   codexLogin: (settings = {}) => ipcRenderer.invoke("codex:login", settings),
   codexStatus: (settings = {}) => ipcRenderer.invoke("codex:status", settings),
   codexModels: (settings = {}) => ipcRenderer.invoke("codex:models", settings),
@@ -32,11 +43,13 @@ contextBridge.exposeInMainWorld("lingua", {
   openPermissionSettings: (kind) =>
     ipcRenderer.invoke("system:open-permission-settings", kind),
   openOllamaDownload: () => ipcRenderer.invoke("system:open-ollama-download"),
+  openExternal: (url) => ipcRenderer.invoke("system:open-external", url),
   getAppInfo: () => ipcRenderer.invoke("app:info"),
   getUpdateStatus: () => ipcRenderer.invoke("update:get-status"),
   checkForUpdates: () => ipcRenderer.invoke("update:check"),
   downloadUpdate: () => ipcRenderer.invoke("update:download"),
   installUpdate: () => ipcRenderer.invoke("update:install"),
+  openUpdateRepair: () => ipcRenderer.invoke("update:open-repair"),
   onUpdateStatus: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("update:status", listener);
@@ -56,6 +69,11 @@ contextBridge.exposeInMainWorld("lingua", {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("translation:hydrate", listener);
     return () => ipcRenderer.removeListener("translation:hydrate", listener);
+  },
+  onMemorySyncChanged: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("memory-sync:changed", listener);
+    return () => ipcRenderer.removeListener("memory-sync:changed", listener);
   },
   onPopupStart: (callback) => {
     const listener = (_event, payload) => callback(payload);

@@ -4,7 +4,7 @@ const path = require("node:path");
 const { safeStorage } = require("electron");
 
 const DEFAULT_SETTINGS = Object.freeze({
-  settingsSchemaVersion: 4,
+  settingsSchemaVersion: 5,
   provider: "ollama",
   sourceLanguage: "auto",
   targetLanguage: "zh-CN",
@@ -32,6 +32,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   ocrLanguages: "eng+chi_sim",
   launchAtLogin: false,
   popupAlwaysOnTop: false,
+  androidMemorySyncEnabled: true,
+  androidMemoryPairingEncrypted: "",
   apiKeyEncrypted: ""
 });
 
@@ -108,11 +110,13 @@ class SettingsStore {
   }
 
   publicValue() {
-    const { apiKeyEncrypted, ...visible } = this.data;
+    const { apiKeyEncrypted, androidMemoryPairingEncrypted, ...visible } = this.data;
     return {
       ...visible,
       apiKeyConfigured: Boolean(apiKeyEncrypted),
-      apiKey: ""
+      apiKey: "",
+      androidMemoryPaired: Boolean(androidMemoryPairingEncrypted),
+      androidMemoryPairing: ""
     };
   }
 
@@ -140,7 +144,8 @@ class SettingsStore {
       "mamboRoot",
       "ocrLanguages",
       "launchAtLogin",
-      "popupAlwaysOnTop"
+      "popupAlwaysOnTop",
+      "androidMemorySyncEnabled"
     ];
 
     for (const key of allowed) {
@@ -158,6 +163,22 @@ class SettingsStore {
         .toString("base64");
     }
 
+    if (
+      typeof patch.androidMemoryPairing === "string" &&
+      patch.androidMemoryPairing.trim()
+    ) {
+      if (!safeStorage.isEncryptionAvailable()) {
+        throw new Error("当前系统无法安全保存安卓配对凭据");
+      }
+      this.data.androidMemoryPairingEncrypted = safeStorage
+        .encryptString(patch.androidMemoryPairing.trim())
+        .toString("base64");
+    }
+
+    if (patch.clearAndroidMemoryPairing === true) {
+      this.data.androidMemoryPairingEncrypted = "";
+    }
+
     if (patch.clearApiKey === true) {
       this.data.apiKeyEncrypted = "";
     }
@@ -171,6 +192,17 @@ class SettingsStore {
     try {
       return safeStorage.decryptString(
         Buffer.from(this.data.apiKeyEncrypted, "base64")
+      );
+    } catch {
+      return "";
+    }
+  }
+
+  androidMemoryPairing() {
+    if (!this.data.androidMemoryPairingEncrypted) return "";
+    try {
+      return safeStorage.decryptString(
+        Buffer.from(this.data.androidMemoryPairingEncrypted, "base64")
       );
     } catch {
       return "";

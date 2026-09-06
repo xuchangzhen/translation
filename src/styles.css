@@ -1,5 +1,6 @@
 @import "@fontsource-variable/source-sans-3";
 @import "@fontsource-variable/noto-sans-sc";
+@import "@fontsource/charis-sil/400.css";
 
 :root {
   color: #1d1d1f;
@@ -123,6 +124,7 @@ svg {
 }
 
 .rail-button {
+  position: relative;
   width: 42px;
   height: 42px;
   border-radius: 12px;
@@ -587,15 +589,113 @@ kbd {
   white-space: pre-wrap;
 }
 
+.markdown-body {
+  white-space: normal;
+}
+
+.markdown-body > :first-child {
+  margin-top: 0;
+}
+
+.markdown-body > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body p,
+.markdown-body ul,
+.markdown-body ol,
+.markdown-body blockquote,
+.markdown-body pre,
+.markdown-body table {
+  margin: 0.65em 0;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4 {
+  margin: 1em 0 0.4em;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.markdown-body h1 { font-size: 1.35em; }
+.markdown-body h2 { font-size: 1.2em; }
+.markdown-body h3,
+.markdown-body h4 { font-size: 1.05em; }
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 1.35em;
+}
+
+.markdown-body li + li {
+  margin-top: 0.24em;
+}
+
+.markdown-body blockquote {
+  border-left: 3px solid #b6cff0;
+  color: #515154;
+  padding-left: 0.8em;
+}
+
+.markdown-body code {
+  border-radius: 5px;
+  background: #e9e9ee;
+  padding: 0.08em 0.32em;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.78em;
+}
+
+.markdown-body pre {
+  overflow-x: auto;
+  border: 1px solid #dedee3;
+  border-radius: 10px;
+  background: #eeeef2;
+  padding: 0.75em 0.9em;
+  line-height: 1.5;
+}
+
+.markdown-body pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 0.72em;
+}
+
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78em;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid #d8d8de;
+  padding: 0.4em 0.55em;
+  text-align: left;
+}
+
+.markdown-body th {
+  background: #eeeef2;
+  font-weight: 700;
+}
+
+.markdown-body a {
+  color: var(--green);
+  text-decoration: underline;
+  text-decoration-color: rgba(0, 113, 227, 0.35);
+  text-underline-offset: 0.15em;
+}
+
 .phonetic-line {
   justify-content: space-between;
   gap: 8px;
   color: var(--phonetic);
-  font-family: "Source Sans 3 Variable", sans-serif;
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 1.65;
-  letter-spacing: 0.012em;
+  font-family: "Charis SIL", "Doulos SIL", serif;
+  font-size: 18px;
+  font-weight: 400;
+  line-height: 1.55;
+  letter-spacing: 0.025em;
 }
 
 .phonetic-text,
@@ -909,6 +1009,87 @@ kbd {
   color: #b53a30;
 }
 
+.android-pairing {
+  display: grid;
+  gap: 12px;
+}
+
+.android-provision-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 16px;
+}
+
+.android-pairing-ready {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border: 1px solid #cce6d9;
+  border-radius: 14px;
+  background: #f3fbf7;
+  padding: 14px 16px;
+}
+
+.android-pairing-ready > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.android-pairing-ready strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.android-pairing-ready small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.android-pairing-result:not([hidden]) {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  align-items: center;
+  gap: 22px;
+  border: 1px solid #dce7f3;
+  border-radius: 16px;
+  background: #f7faff;
+  padding: 16px;
+}
+
+.android-pairing-result img {
+  width: 220px;
+  height: 220px;
+  border: 8px solid #ffffff;
+  border-radius: 12px;
+}
+
+.android-pairing-result strong {
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.android-pairing-result p {
+  max-width: 420px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.android-advanced {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.android-advanced summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.android-advanced .field {
+  margin-top: 10px;
+}
+
 .setting-subgrid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -970,6 +1151,45 @@ kbd {
 
 .settings-actions .success {
   color: #2a725e;
+}
+
+.android-sync-overview {
+  display: grid;
+  grid-template-columns: 110px 110px minmax(220px, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid #dce7f3;
+  border-radius: 14px;
+  background: #f5f9ff;
+  padding: 13px 14px;
+}
+
+.android-sync-overview > div {
+  display: grid;
+  gap: 3px;
+}
+
+.android-sync-overview span {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.android-sync-overview strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.android-sync-overview .android-sync-message strong {
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.android-sync-overview .android-sync-message strong.error {
+  color: #b53a30;
 }
 
 .ollama-setup {
@@ -1427,6 +1647,29 @@ kbd {
   .permission-grid {
     margin-left: 0;
   }
+
+  .android-sync-overview {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .android-provision-grid,
+  .android-pairing-result:not([hidden]) {
+    grid-template-columns: 1fr;
+  }
+
+  .android-pairing-result img {
+    justify-self: center;
+  }
+
+  .android-pairing-ready {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .android-sync-message,
+  .android-sync-overview .button {
+    grid-column: 1 / -1;
+  }
 }
 
 /* Global quick-translation popup */
@@ -1640,17 +1883,21 @@ kbd {
   white-space: pre-wrap;
 }
 
+.popup-translation.markdown-body h1 { font-size: 1.2em; }
+.popup-translation.markdown-body h2 { font-size: 1.1em; }
+.popup-translation.markdown-body pre { font-size: 0.8em; }
+
 .popup-phonetic {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
   color: var(--phonetic);
-  font-family: "Source Sans 3 Variable", sans-serif;
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.65;
-  letter-spacing: 0.012em;
+  font-family: "Charis SIL", "Doulos SIL", serif;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.55;
+  letter-spacing: 0.025em;
 }
 
 .popup-speech-button {

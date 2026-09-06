@@ -16,6 +16,13 @@ const {
   shell
 } = require("electron");
 const { DEFAULT_SETTINGS, SettingsStore } = require("./lib/settings.cjs");
+const { MemoryOutboxStore } = require("./lib/memory.cjs");
+const {
+  parsePairing,
+  provisionAndroidMemoryConnection,
+  syncAndroidMemory,
+  testAndroidMemoryConnection
+} = require("./lib/android-sync.cjs");
 const {
   hookShortcutMatches,
   isModifierOnlyShortcut,
@@ -35,6 +42,7 @@ const {
   warmOllama
 } = require("./lib/translator.cjs");
 const { updateErrorMessage } = require("./lib/updater.cjs");
+const { SecureMacUpdater } = require("./lib/secure-mac-updater.cjs");
 const {
   ensureMamboRunning,
   mamboHealth,
@@ -83,6 +91,9 @@ let popupWindow;
 let pendingPopupPayload = null;
 let tray;
 let store;
+let memoryOutbox;
+let androidMemorySyncTimer;
+let androidMemorySyncInFlight = null;
 let isQuitting = false;
 let suppressMainWindowActivation = false;
 let startupShortcutNotice = "";
@@ -112,6 +123,7 @@ let updateState = {
   progress: 0,
   version: ""
 };
+let secureMacUpdater = null;
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 
@@ -252,8 +264,9 @@ function createMainWindow() {
         `);
       }
       if (process.env.LINGUABRIDGE_SMOKE_VIEW === "settings") {
+        const smokeView = JSON.stringify(process.env.LINGUABRIDGE_SMOKE_VIEW);
         await mainWindow.webContents.executeJavaScript(`
-          document.querySelector("#open-settings")?.click()
+          document.querySelector("[data-view=" + ${smokeView} + "]")?.click()
         `);
       }
       if (process.env.LINGUABRIDGE_SMOKE_PROVIDER) {
@@ -543,6 +556,69 @@ function sendStatus(message, progress) {
   sendPopupStatus(message, progress);
 }
 
+function memorySyncConfigured(settings = store?.data) {
+  return Boolean(
+    settings?.androidMemorySyncEnabled &&
+    store?.androidMemoryPairing()
+  );
+}
+
+function sendMemorySyncStatus(patch = {}) {
+  const payload = {
+    ...memoryOutbox.status(),
+    configured: memorySyncConfigured(),
+    state: "idle",
+    message: "",
+    ...patch
+  };
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("memory-sync:changed", payload);
+  }
+  return payload;
+}
+
+function scheduleAndroidMemorySync(delay = 0) {
+  clearTimeout(androidMemorySyncTimer);
+  if (!memorySyncConfigured()) {
+    sendMemorySyncStatus();
+    return;
+  }
+  androidMemorySyncTimer = setTimeout(() => {
+    void runAndroidMemorySync();
+  }, Math.max(0, delay));
+}
+
+async function runAndroidMemorySync() {
+  if (androidMemorySyncInFlight) return androidMemorySyncInFlight;
+  if (!memorySyncConfigured()) return sendMemorySyncStatus();
+  if (!memoryOutbox.status().pending) return sendMemorySyncStatus();
+  sendMemorySyncStatus({ state: "syncing", message: "正在自动发送到安卓端…" });
+  androidMemorySyncInFlight = syncAndroidMemory(
+    memoryOutbox,
+    store.androidMemoryPairing()
+  )
+    .then((result) => {
+      sendMemorySyncStatus({
+        state: "success",
+        message: result.sent ? `已自动发送 ${result.sent} 条` : "已全部同步"
+      });
+      if (result.status.pending) scheduleAndroidMemorySync(1500);
+      return result;
+    })
+    .catch((error) => {
+      sendMemorySyncStatus({
+        state: "waiting",
+        message: `安卓暂时不可达，稍后自动重试：${error.message}`
+      });
+      scheduleAndroidMemorySync(30 * 1000);
+      return null;
+    })
+    .finally(() => {
+      androidMemorySyncInFlight = null;
+    });
+  return androidMemorySyncInFlight;
+}
+
 function setUpdateState(patch) {
   updateState = { ...updateState, ...patch };
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -560,6 +636,24 @@ function applyUpdateError(error) {
 }
 
 function setupAutoUpdater() {
+  if (process.platform === "darwin") {
+    if (!app.isPackaged) {
+      setUpdateState({
+        status: "development",
+        message: "开发版本不检查在线更新",
+        version: app.getVersion()
+      });
+      return;
+    }
+    secureMacUpdater = new SecureMacUpdater({
+      app,
+      onState: setUpdateState
+    });
+    setTimeout(() => {
+      void secureMacUpdater.check().catch(applyUpdateError);
+    }, 8000);
+    return;
+  }
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.on("checking-for-update", () => {
@@ -1161,6 +1255,9 @@ function registerIpc() {
         );
       }
     }
+    if (String(patch?.androidMemoryPairing || "").trim()) {
+      parsePairing(patch.androidMemoryPairing);
+    }
     const previousPopupAlwaysOnTop = store.data.popupAlwaysOnTop;
     const settings = store.update(patch || {});
     translationCache.clear();
@@ -1180,6 +1277,7 @@ function registerIpc() {
         .then(() => warmOllama(store.data))
         .catch(() => {});
     }
+    scheduleAndroidMemorySync(0);
     return { settings, shortcutFailures };
   });
   ipcMain.handle("settings:clear-api-key", () =>
@@ -1188,6 +1286,48 @@ function registerIpc() {
   ipcMain.handle("clipboard:write", (_event, text) => {
     clipboard.writeText(String(text || ""));
     return true;
+  });
+  ipcMain.handle("memory:sync-status", () => sendMemorySyncStatus());
+  ipcMain.handle("memory:capture", (_event, payload) => {
+    const sourceText = String(payload?.text || "").trim();
+    if (!sourceText || !payload?.result || typeof payload.result !== "object") {
+      throw new Error("没有可加入记忆的翻译内容");
+    }
+    const summary = memoryOutbox.capture(sourceText, payload.result);
+    const sync = sendMemorySyncStatus();
+    scheduleAndroidMemorySync(0);
+    return { ...summary, sync };
+  });
+  ipcMain.handle("memory:test-android", (_event, pairingValue) => {
+    const provided = String(pairingValue || "").trim();
+    return testAndroidMemoryConnection(provided || store.androidMemoryPairing());
+  });
+  ipcMain.handle("memory:provision-android", async (_event, payload) => {
+    const provisioned = await provisionAndroidMemoryConnection(
+      payload?.serverUrl,
+      payload?.registrationKey
+    );
+    const settings = store.update({
+      androidMemoryPairing: provisioned.pairingUri,
+      androidMemorySyncEnabled: true
+    });
+    const sync = sendMemorySyncStatus();
+    scheduleAndroidMemorySync(0);
+    return { settings, sync, pairingUri: provisioned.pairingUri };
+  });
+  ipcMain.handle("memory:get-phone-pairing", () => {
+    const pairingUri = store.androidMemoryPairing();
+    if (!pairingUri) throw new Error("尚未创建安卓连接");
+    const pairing = parsePairing(pairingUri);
+    if (!pairing.readToken) {
+      throw new Error("当前连接由旧版手机创建，请解除后使用“一键连接手机”重新创建");
+    }
+    return pairingUri;
+  });
+  ipcMain.handle("memory:clear-pairing", () => {
+    const settings = store.update({ clearAndroidMemoryPairing: true });
+    clearTimeout(androidMemorySyncTimer);
+    return { settings, sync: sendMemorySyncStatus() };
   });
   ipcMain.handle("codex:login", (_event, patch) =>
     codexLogin({ ...store.data, ...(patch || {}) })
@@ -1371,6 +1511,17 @@ function registerIpc() {
     await shell.openExternal("https://ollama.com/download");
     return true;
   });
+  ipcMain.handle("system:open-external", async (_event, value) => {
+    let url;
+    try {
+      url = new URL(String(value || ""));
+    } catch {
+      return false;
+    }
+    if (!["http:", "https:"].includes(url.protocol)) return false;
+    await shell.openExternal(url.toString());
+    return true;
+  });
   ipcMain.handle("app:info", () => ({
     version: app.getVersion(),
     platform: process.platform,
@@ -1380,7 +1531,8 @@ function registerIpc() {
   ipcMain.handle("update:check", async () => {
     if (!app.isPackaged) return updateState;
     try {
-      await autoUpdater.checkForUpdates();
+      if (secureMacUpdater) await secureMacUpdater.check();
+      else await autoUpdater.checkForUpdates();
     } catch (error) {
       applyUpdateError(error);
     }
@@ -1389,7 +1541,8 @@ function registerIpc() {
   ipcMain.handle("update:download", async () => {
     if (!app.isPackaged) return updateState;
     try {
-      await autoUpdater.downloadUpdate();
+      if (secureMacUpdater) await secureMacUpdater.download();
+      else await autoUpdater.downloadUpdate();
     } catch (error) {
       applyUpdateError(error);
     }
@@ -1397,13 +1550,21 @@ function registerIpc() {
   });
   ipcMain.handle("update:install", () => {
     if (updateState.status !== "downloaded") return false;
+    if (secureMacUpdater) return secureMacUpdater.install();
     setImmediate(() => autoUpdater.quitAndInstall(false, true));
+    return true;
+  });
+  ipcMain.handle("update:open-repair", async () => {
+    await shell.openExternal(
+      "https://github.com/xuchangzhen/translation/releases/latest"
+    );
     return true;
   });
 }
 
 app.whenReady().then(() => {
   store = new SettingsStore(app.getPath("userData"));
+  memoryOutbox = new MemoryOutboxStore(app.getPath("userData"));
   repairStoredShortcuts();
   if (process.env.LINGUABRIDGE_SMOKE_MODIFIER_SHORTCUT) {
     store.data.selectionShortcut =
@@ -1418,6 +1579,7 @@ app.whenReady().then(() => {
   registerIpc();
   createMainWindow();
   createTray();
+  scheduleAndroidMemorySync(1500);
   setupAutoUpdater();
   if (process.env.LINGUABRIDGE_POPUP_SCREENSHOT_PATH) {
     const smokePopupText = String(
@@ -1496,6 +1658,7 @@ app.whenReady().then(() => {
 
 app.on("before-quit", async () => {
   isQuitting = true;
+  clearTimeout(androidMemorySyncTimer);
   globalShortcut.unregisterAll();
   stopMacService();
   await stopMambo(store?.data || {});

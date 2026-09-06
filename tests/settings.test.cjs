@@ -87,3 +87,18 @@ test("persists the translation thinking preference", () => {
     fs.rmSync(userDataPath, { recursive: true, force: true });
   }
 });
+
+test("enables automatic Android memory delivery by default", () => {
+  const userDataPath = fs.mkdtempSync(
+    path.join(os.tmpdir(), "translation-settings-")
+  );
+  try {
+    const store = new SettingsStore(userDataPath);
+    assert.equal(store.data.androidMemorySyncEnabled, true);
+    assert.equal(store.publicValue().androidMemoryPaired, false);
+    store.update({ androidMemorySyncEnabled: false });
+    assert.equal(new SettingsStore(userDataPath).data.androidMemorySyncEnabled, false);
+  } finally {
+    fs.rmSync(userDataPath, { recursive: true, force: true });
+  }
+});

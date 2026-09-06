@@ -20,6 +20,7 @@ const { toIPA } = require("phonemize");
 const RESULT_SHAPE = {
   sourceLanguage: "",
   targetLanguage: "",
+  sourceFormat: "plain",
   translation: "",
   phonetic: "",
   pronunciationText: "",
@@ -149,12 +150,34 @@ function isSingleEnglishWord(text) {
   return /^[A-Za-z][A-Za-z.'’_-]*$/.test(String(text || "").trim());
 }
 
+function looksLikeMarkdown(value) {
+  const text = String(value || "");
+  return (
+    /(^|\n)\s{0,3}(?:#{1,6}\s+|>\s+|[-+*]\s+|\d+[.)]\s+)/m.test(text) ||
+    /(^|\n)\s*(```|~~~)/m.test(text) ||
+    /(^|\n)\s*\|.+\|\s*\n\s*\|?\s*:?-{3,}/m.test(text) ||
+    /(?:\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|`[^`\n]+`|!?\[[^\]\n]+\]\([^)\n]+\))/m.test(text)
+  );
+}
+
+function normalizeIpa(value) {
+  const cleaned = String(value || "")
+    .replace(/\b(?:ipa|phonetic)\s*:?/gi, "")
+    .replace(/[\u3400-\u9fff]+/g, "")
+    .trim();
+  if (!cleaned) return "";
+  const wrapped = cleaned.match(/[\/\[]\s*([^\/\]]+?)\s*[\/\]]/);
+  const content = String(wrapped?.[1] || cleaned)
+    .replace(/^[\/\[]+|[\/\]]+$/g, "")
+    .trim();
+  return content ? `/${content}/` : "";
+}
+
 function localEnglishIpa(text) {
   if (!isSingleEnglishWord(text)) return "";
   try {
     const value = String(toIPA(String(text).trim(), "en-US") || "").trim();
-    const unwrapped = value.replace(/^[/\[]/, "").replace(/[/\]]$/, "");
-    return unwrapped ? `/${unwrapped}/` : "";
+    return normalizeIpa(value);
   } catch {
     return "";
   }
@@ -178,11 +201,10 @@ function parseTranslationResult(raw, targetLanguage, sourceText = "") {
     ...RESULT_SHAPE,
     ...parsed,
     targetLanguage: parsed.targetLanguage || targetLanguage,
+    sourceFormat: looksLikeMarkdown(sourceText) ? "markdown" : "plain",
     translation: String(parsed.translation || "").trim(),
     phonetic: isSingleEnglishWord(sourceText)
-      ? String(parsed.phonetic || "")
-          .replace(/[\u3400-\u9fff]+/g, "")
-          .trim() || localEnglishIpa(sourceText)
+      ? normalizeIpa(parsed.phonetic) || localEnglishIpa(sourceText)
       : "",
     pronunciationText: String(
       parsed.pronunciationText || sourceText || ""
@@ -305,6 +327,9 @@ function buildTranslateGemmaPrompt(text, settings, technicalMode = false) {
     technicalMode
       ? "Treat the text as software, hardware, networking, operations, or another IT professional context. Use precise established technical terminology; preserve identifiers and code."
       : "",
+    looksLikeMarkdown(text)
+      ? "The input is Markdown. Preserve its headings, lists, block quotes, tables, links, emphasis, line breaks, inline code, and fenced code structure exactly. Translate only natural-language prose; never translate code, commands, identifiers, URLs, or fence language tags."
+      : "",
     `Produce only the ${target.name} translation, without any additional explanations or commentary. Please translate the following ${source.name} text into ${target.name}:`,
     "",
     "",
@@ -319,6 +344,9 @@ function buildMessages(text, options, technicalMode = false) {
     "你是快速、严谨的翻译引擎，擅长普通语言与 IT 技术内容。",
     "只完成翻译，不生成解释、术语分析或替代表达。",
     "保持代码、命令、API 名、类名和变量名原样。",
+    looksLikeMarkdown(text)
+      ? "输入是 Markdown：translation 字段必须保留原有标题层级、列表、引用、表格、链接、强调、换行、行内代码与代码块结构；只翻译自然语言，代码、命令、标识符、URL 和代码围栏语言名必须原样保留。"
+      : "",
     "必须只输出一个合法 JSON 对象，不要使用 Markdown。",
     "JSON 字段仅包含：sourceLanguage, targetLanguage, translation, phonetic, pronunciationText, isTechnical。",
     "仅当英文原文是一个单词时，phonetic 才返回该单词的标准 IPA；英文句子、短语、中文及其他语言一律返回空字符串。绝不能给中文译文标音。",
@@ -329,7 +357,7 @@ function buildMessages(text, options, technicalMode = false) {
       : "",
     "优先尽快返回简洁结果。"
   ].filter(Boolean).join("\n");
-  const user = `源语言：${source}\n目标语言：${target}\n待翻译文本：\n${text}`;
+  const user = `源语言：${source}\n目标语言：${target}\n输入格式：${looksLikeMarkdown(text) ? "Markdown" : "纯文本"}\n待翻译文本：\n${text}`;
   return [
     { role: "system", content: system },
     { role: "user", content: user }
@@ -477,7 +505,10 @@ async function translateWithTranslateGemma(text, settings, technicalMode = false
     },
     120000
   );
-  const translation = stripCodeFence(extractResponseText(payload))
+  const rawTranslation = extractResponseText(payload);
+  const translation = (looksLikeMarkdown(text)
+    ? String(rawTranslation || "").trim()
+    : stripCodeFence(rawTranslation))
     .replace(/^["“]|["”]$/g, "")
     .trim();
   if (!translation) throw new Error("TranslateGemma 没有返回译文");
@@ -702,10 +733,39 @@ function decodeHtmlEntities(value) {
     .replaceAll("&amp;", "&");
 }
 
+function maskMarkdownLiterals(value) {
+  const literals = [];
+  const preserve = (literal) => {
+    const token = `⟦LINGUA${literals.length}⟧`;
+    literals.push(String(literal));
+    return token;
+  };
+  let text = String(value || "").replace(
+    /```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]+`/g,
+    preserve
+  );
+  text = text.replace(/(!?\[[^\]]*\]\()([^)\n]+)(\))/g, (_match, open, target, close) => {
+    return `${open}${preserve(target)}${close}`;
+  });
+  return {
+    text,
+    restore(translated) {
+      return literals.reduce(
+        (output, literal, index) =>
+          output.replaceAll(`⟦LINGUA${index}⟧`, literal),
+        String(translated || "")
+      );
+    }
+  };
+}
+
 async function translateWithGoogle(text, settings, apiKey, technicalMode = false) {
   if (!apiKey) throw new Error("请先在设置中填写 Google Cloud API Key");
+  const markdownLiterals = looksLikeMarkdown(text)
+    ? maskMarkdownLiterals(text)
+    : { text, restore: (value) => value };
   const body = {
-    q: text,
+    q: markdownLiterals.text,
     target: settings.targetLanguage,
     format: "text",
     model: "nmt"
@@ -723,7 +783,9 @@ async function translateWithGoogle(text, settings, apiKey, technicalMode = false
     30000
   );
   const item = payload?.data?.translations?.[0];
-  const translation = decodeHtmlEntities(item?.translatedText).trim();
+  const translation = markdownLiterals
+    .restore(decodeHtmlEntities(item?.translatedText))
+    .trim();
   if (!translation) throw new Error("Google Cloud Translation 没有返回译文");
   const sourceLanguage = detectSourceLanguage(
     text,
@@ -1037,6 +1099,7 @@ async function translateTextWithMode(
   }
   return {
     ...result,
+    sourceFormat: looksLikeMarkdown(normalizedText) ? "markdown" : "plain",
     isTechnical: technicalMode || result.isTechnical,
     needsEnrichment:
       technicalMode ||
@@ -1144,8 +1207,11 @@ module.exports = {
   hasLikelyAbbreviation,
   isLikelyTechnicalText,
   isSingleEnglishWord,
+  looksLikeMarkdown,
   listOllamaModels,
   localEnglishIpa,
+  maskMarkdownLiterals,
+  normalizeIpa,
   normalizeBaseUrl,
   parseTranslationResult,
   testProvider,

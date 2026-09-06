@@ -17,6 +17,10 @@
 - 独立顶部拖动带，拖动窗口时不会选中标题或设置文字
 - 简洁桌面界面、可录制并修改划词、截图及显示/隐藏悬浮窗三组全局快捷键；支持单独按 Alt 等修饰键触发，悬浮窗快捷键可重新显示上一次翻译
 - 英文单词显示原词 IPA，英文短语和句子不显示音标；原文与译文朗读按钮明确区分
+- IPA 使用适合国际音标的 Charis SIL 字体，统一规范为 `/…/` 音位标注样式
+- Markdown 原文会在翻译后保留标题、列表、引用、表格、链接、强调、行内代码与代码块样式
+- 翻译过的单词和句子由桌面端自动拆分、去重并端到端加密上传；技术术语会连同定义、分类和原句语境一起发送
+- 单词记忆是独立 Android 应用：手机端自动接收密文、离线保存词库，并按“先回忆、后看答案”的间隔复习机制推送待记内容
 - 中文译文可使用 Mac mini 的 MamboTTS / GPT-SoVITS 曼波音色；只在点击朗读时加载，音频生成后自动关闭模型
 - 通过模型判断与本地技术词识别双重检测前端、后端、DevOps、数据库、云计算、嵌入式等 IT 内容，并在译文出现后继续补充实际用途
 - TranslateGemma 主翻译 + Qwen 技术术语解析的本地混合链路，并在 TranslateGemma 不可用时自动回退 Qwen
@@ -57,6 +61,71 @@ Ollama 模式会在应用启动和保存设置后预热主翻译模型，关闭�
 设置中的“语音朗读”默认指向 `~/manbo/MamboTTS-macOS-port` 和 `http://127.0.0.1:9880`。点击中文朗读后，macOS 版会通过已有的 `GPTSoVits` Conda 环境自动启动模型，生成并缓存 WAV 音频，然后立即关闭模型；模型不可用时回退到系统中文语音。悬浮窗原文区域的“朗读原文”支持英文单词、短语和完整句子，并使用系统英文音色。
 
 Mac mini 版会运行一个很轻量的局域网后台桥（端口 `19876`），它本身不加载语音模型。Windows 点击中文朗读时，会根据已设置的远程 Ollama 地址自动找到这个桥，在 Mac mini 上按需启动曼波、取得音频并关闭模型。
+
+## 单词记忆
+
+单词记忆已拆分为三个边界清晰的组件：
+
+| 组件 | 职责 | 能否独立运行 |
+| --- | --- | --- |
+| 桌面翻译器 | 翻译后自动拆句、提取术语、去重、加密上传 | 可以，手机离线时保留待发送队列并自动重试 |
+| 加密同步服务 | 通过 HTTPS 暂存和转交密文，手机确认后删除 | 不接触明文，不参与翻译或复习 |
+| Android 单词记忆 | 自动接收、SQLite 离线词库、主动回忆、间隔复习和系统提醒 | 可以，断网后仍可完整学习 |
+
+正常使用链路为：`翻译完成 → 自动整理 → AES-256-GCM 加密 → 服务器中继 → Android 自动接收并入库`。除首次设备配对外，不需要导出文件、点击同步或手动导入。
+
+- 主窗口实时翻译会等待输入稳定 4 秒再收录，避免残缺输入；划词、截图和手动翻译完成后立即进入自动上传流程。
+- 单个英文词生成单词卡；句子按自然句或 Markdown 段落配对拆分；技术术语和缩写会携带定义、类别及原句语境。
+- 同一内容再次出现时只更新释义和语境。Android 会保留已有复习进度，不会因为桌面端更新而变回新卡。
+- Android 端先展示英文供主动回忆，再根据“忘记 / 模糊 / 记得 / 轻松”安排 10 分钟到逐步增长的复习间隔。
+- 桌面配对凭据使用系统安全存储；Android 凭据使用 Android Keystore；内容密钥只存在于两端，服务器数据库仅保存密文。
+
+### 部署加密同步服务
+
+服务端位于 [`sync-server`](sync-server)，提供 PostgreSQL 持久化、设备读写令牌、注册密钥保护、限流、长轮询即时下发和 Caddy 自动 HTTPS。日常部署推荐让维护者直接运行自动化脚本，用户只需提供 SSH 地址和同步子域名：
+
+```bash
+LINGUABRIDGE_SSH_TARGET=user@server \
+LINGUABRIDGE_SYNC_DOMAIN=memory.example.com \
+./scripts/deploy-sync-server.sh
+```
+
+脚本自动生成强随机数据库密码和注册码、上传服务、启动容器、申请 HTTPS、检查公网健康状态，并把注册码放入 macOS 钥匙串。
+
+如果服务器的 80/443 已由现有 Nginx 承载其他业务，不需要迁移或停机。使用共享服务器脚本后，同步服务只监听 `127.0.0.1:18787`，新增独立子域名站点并沿用 Nginx/Certbot；脚本不会升级 Docker，也不会覆盖已有站点：
+
+```bash
+LINGUABRIDGE_SSH_TARGET=root@15.204.209.199 \
+LINGUABRIDGE_SSH_IDENTITY="$HOME/.ssh/linguabridge_deploy_ed25519" \
+LINGUABRIDGE_SYNC_DOMAIN=memory.xuchangzhen968.top \
+LINGUABRIDGE_SERVER_IPV4=15.204.209.199 \
+./scripts/deploy-sync-server-nginx.sh
+```
+
+该模式在写入自己的站点文件前后都会执行 `nginx -t`，使用独立容器名、Docker 网络和数据卷；数据库不映射到宿主机端口。证书续期钩子也会先验证 Nginx 配置，再平滑 reload。
+
+也可以手动部署：
+
+```bash
+cd sync-server
+cp .env.example .env
+# 修改域名、数据库密码和注册码
+docker compose up -d --build
+```
+
+将域名解析到服务器并开放 80/443 后，访问 `https://你的域名/healthz` 检查服务。在桌面翻译器中填写同步地址和一次性服务器注册码，点击“一键连接手机”；再用安卓手机相机扫描本机生成的二维码，应用会自动验证、保存密钥并开启后台接收。无需复制长密钥或手动导入。
+
+### 构建 Android 应用
+
+Android 工程位于 [`android-memory`](android-memory)，需要 JDK 17 与 Android SDK 36：
+
+```bash
+pnpm build:android
+```
+
+Debug APK 输出到 `android-memory/app/build/outputs/apk/debug/app-debug.apk`；正式签名 APK 由 `pnpm build:android:release` 生成。应用安装并完成首次连接后，会通过低优先级前台通知保持自动接收；词库和复习功能本身不依赖网络。
+
+Android 正式版每天自动检查四次更新，下载后验证哈希、包名、版本和 APK 签名，再显示安装通知。服务器会定时镜像 GitHub Release 中的最新 APK，因此日常升级不需要电脑传文件。Android 不允许普通应用静默安装：首次需允许本应用安装未知来源更新，每次安装仍需点击系统确认。
 
 ## 开发运行
 
@@ -104,7 +173,11 @@ http://<Mac-mini-局域网-IP>:11434
 
 ## 应用内更新
 
-设置页会显示当前版本。点击“检查更新”后可直接下载，完成后点击“立即安装”。自动更新读取 GitHub Release 中由 `electron-builder` 生成的更新元数据；旧版 Release 缺少元数据时只显示简短兼容提示，不会暴露内部错误栈。推送 `v*` 标签会同时构建 macOS、Windows 安装包并创建 Release。当前 macOS 发布沿用免签名构建路径，不依赖 Apple Developer 凭据；如后续配置 Developer ID 签名和 Apple 公证，应在启用前完成完整的签名与更新验证。
+设置页会显示当前版本。点击“检查更新”后可直接下载，完成后点击“立即安装”。Windows 继续使用 `electron-updater`；macOS 使用项目自己的安全更新通道，因此没有 Apple Developer Program 会员也能让已安装的应用可靠更新。
+
+macOS 发布清单使用独立 Ed25519 私钥签名，应用内只嵌入公钥。客户端先验证清单签名，再验证 ZIP 的 SHA-512、文件大小、应用 Bundle ID、版本号和完整性签名；安装时保留上一版本，失败会自动回滚。发布私钥只保存在维护者的 macOS 钥匙串和 GitHub Actions Secret `MAC_UPDATE_PRIVATE_KEY_BASE64` 中，不进入仓库或安装包。
+
+这套机制保证更新确实来自本项目且下载内容未被篡改，但它不等同于 Apple Developer ID 公证。首次从互联网下载的新安装包仍可能需要在 Finder 中右键选择“打开”一次；完成首次安装后，后续版本可在应用内一键更新。旧版 `electron-updater` 遇到 Apple 签名校验失败时，会提示完成一次修复安装并切换到新通道。
 
 ## 验证与打包
 
@@ -132,6 +205,7 @@ pnpm build:win
 - OCR 首次运行需要下载所选语言包。之后从用户目录缓存加载。
 - 当前 Windows 构建目标为 x64；如需 arm64，可在 `package.json` 的 builder 配置中增加目标架构。
 - 本项目参考 Immersive Translate 的“随处触发、上下文翻译、专业术语解释”产品思路；其当前公开仓库不是源代码仓库，本项目未复制其实现。
+- Android 单词记忆应用参考 [WordDrill](https://github.com/ChHsiching/word-drill) 的离线闪卡与极简浏览思路，并独立实现加密自动接收、去重入库、主动回忆和间隔复习调度。
 
 ## 许可证
 

@@ -6,6 +6,10 @@ on:
     tags:
       - "v*"
 
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -22,6 +26,7 @@ jobs:
               release/*.dmg
               release/*.zip
               release/latest-mac.yml
+              release/latest-mac-secure.json
               release/*.blockmap
           - os: windows-latest
             command: build:win
@@ -45,18 +50,106 @@ jobs:
           cache: pnpm
       - name: 安装项目依赖
         run: pnpm install --frozen-lockfile
+      - name: 检查版本号与标签
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$package_version" != "$tag_version" ]; then
+            echo "package.json 版本 $package_version 与标签 $GITHUB_REF_NAME 不一致。"
+            exit 1
+          fi
       - name: 检查并构建安装包
         run: pnpm run ${{ matrix.command }}
+      - name: 验证 macOS 本地完整性签名
+        if: matrix.os == 'macos-14'
+        shell: bash
+        run: |
+          app_bundle="$(find release -type d -name '*.app' -print -quit)"
+          if [ -z "$app_bundle" ]; then
+            echo "未找到 macOS app bundle。"
+            exit 1
+          fi
+          codesign --verify --deep --strict --verbose=2 "$app_bundle"
+      - name: 生成 Ed25519 安全更新清单
+        if: matrix.os == 'macos-14' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          MAC_UPDATE_PRIVATE_KEY_BASE64: ${{ secrets.MAC_UPDATE_PRIVATE_KEY_BASE64 }}
+        run: |
+          if [ -z "$MAC_UPDATE_PRIVATE_KEY_BASE64" ]; then
+            echo "缺少 GitHub Actions 更新签名密钥：MAC_UPDATE_PRIVATE_KEY_BASE64"
+            exit 1
+          fi
+          archive="$(find release -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
+          node scripts/create-secure-update-manifest.mjs "$archive" release/latest-mac-secure.json
       - name: 保存安装包
         uses: actions/upload-artifact@v4
         with:
           name: 翻译-${{ runner.os }}
           path: ${{ matrix.artifact }}
 
+  android:
+    name: 构建 Android 单词记忆安装包
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - name: 还原 Android 发布签名库
+        shell: bash
+        env:
+          ANDROID_SIGNING_KEYSTORE_BASE64: ${{ secrets.ANDROID_SIGNING_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$ANDROID_SIGNING_KEYSTORE_BASE64" ]; then
+            echo "缺少 Android 发布签名库"
+            exit 1
+          fi
+          printf '%s' "$ANDROID_SIGNING_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/android-memory-release.p12"
+          chmod 600 "$RUNNER_TEMP/android-memory-release.p12"
+      - name: 测试并构建签名 APK
+        shell: bash
+        env:
+          LINGUABRIDGE_ANDROID_KEYSTORE: ${{ runner.temp }}/android-memory-release.p12
+          LINGUABRIDGE_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+          LINGUABRIDGE_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
+          LINGUABRIDGE_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
+        run: |
+          chmod +x android-memory/gradlew
+          android-memory/gradlew -p android-memory testDebugUnitTest lintDebug assembleRelease
+      - name: 生成 Android OTA 清单
+        shell: bash
+        env:
+          LINGUABRIDGE_ANDROID_BASE_URL: https://memory.xuchangzhen968.top
+        run: |
+          metadata="android-memory/app/build/outputs/apk/release/output-metadata.json"
+          version_name="$(node -e 'const m=require(process.argv[1]); process.stdout.write(String(m.elements[0].versionName))' "$metadata")"
+          mkdir -p release
+          cp android-memory/app/build/outputs/apk/release/app-release.apk "release/linguabridge-memory-$version_name.apk"
+          node scripts/create-android-update-manifest.mjs \
+            "release/linguabridge-memory-$version_name.apk" \
+            "$metadata" \
+            release/latest-android.json
+      - name: 保存 Android 安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: 单词记忆-Android
+          path: |
+            release/linguabridge-memory-*.apk
+            release/latest-android.json
+
   release:
     name: 发布应用内更新
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs:
+      - build
+      - android
     runs-on: ubuntu-latest
     steps:
       - name: 下载所有平台安装包

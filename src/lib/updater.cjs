@@ -3,7 +3,18 @@ function updateErrorMessage(error, currentVersion = "") {
   const version = currentVersion ? ` v${currentVersion}` : "";
 
   if (
-    /Cannot find latest(?:-mac)?\.yml|latest(?:-mac)?\.yml[\s\S]*404|HttpError:\s*404[\s\S]*latest release artifacts/i.test(
+    /Code signature at URL[\s\S]*did not pass validation|code signature[\s\S]*validation|code object is not signed|signature verification failed/i.test(
+      raw
+    )
+  ) {
+    return {
+      status: "repair",
+      message: "这个旧版本使用的更新器要求 Apple 平台签名，无法直接覆盖安装。请下载一次修复安装包；修复后会切换到项目自己的安全更新通道。"
+    };
+  }
+
+  if (
+    /Cannot find latest(?:-mac)?\.yml|latest(?:-mac)?\.yml[\s\S]*404|HttpError:\s*404[\s\S]*latest release artifacts|更新服务器返回\s*404/i.test(
       raw
     )
   ) {

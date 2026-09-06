@@ -1,5 +1,7 @@
 import "./styles.css";
+import QRCode from "qrcode";
 import { speakText } from "./speech";
+import { renderTranslatedText } from "./markdown";
 
 const LANGUAGES = [
   ["auto", "自动检测"],
@@ -18,6 +20,7 @@ let settings: AppSettings;
 let lastResult: TranslationResult | null = null;
 let isTranslating = false;
 let realtimeTimer: number | undefined;
+let memoryCaptureTimer: number | undefined;
 let queuedRealtime = false;
 let lastTranslatedText = "";
 let codexCatalog: CodexModel[] = [];
@@ -26,6 +29,7 @@ let ollamaCatalog: OllamaModel[] = [];
 let ollamaCatalogLoading = false;
 let currentPlatform = "";
 let appVersion = "";
+let memorySyncStatus: MemorySyncStatus | null = null;
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 
@@ -187,6 +191,7 @@ function renderShell() {
   void window.lingua.getUpdateStatus().then(renderUpdateStatus);
   if (settings.provider === "codex") void loadCodexModels();
   if (settings.provider === "ollama") void loadOllamaModels();
+  if (memorySyncStatus) renderMemorySyncStatus(memorySyncStatus);
 }
 
 function providerLabel(provider: Provider) {
@@ -382,6 +387,57 @@ function settingsMarkup() {
       <section class="settings-section">
         <div class="section-heading">
           <span class="section-number">04</span>
+          <div><h2>安卓单词记忆</h2><p>翻译完成后自动整理、端到端加密并上传；手机离线时后台自动补传。</p></div>
+        </div>
+        <div class="setting-card">
+          <label class="toggle-row span-2">
+            <span><strong>自动发送到安卓端</strong><small>首次配对后无需手动同步；桌面端只保留可靠的待发送队列</small></span>
+            <input id="setting-android-memory-enabled" type="checkbox" ${settings.androidMemorySyncEnabled ? "checked" : ""}>
+          </label>
+          <div class="android-pairing span-2">
+            ${settings.androidMemoryPaired ? `
+              <div class="android-pairing-ready">
+                <div><strong>加密设备已创建 <em class="saved-badge">已安全保存</em></strong><small>手机尚未连接时，重新显示二维码扫描即可。</small></div>
+                <div class="settings-actions">
+                  <button id="show-android-pairing" class="button subtle" type="button">显示手机二维码</button>
+                  <button id="clear-android-memory-pairing" class="text-button danger" type="button">解除连接</button>
+                </div>
+              </div>
+            ` : `
+              <div class="android-provision-grid">
+                <label class="field"><span>同步服务器</span><input id="setting-sync-server-url" autocomplete="url" placeholder="https://memory.example.com"></label>
+                <label class="field"><span>服务器注册码</span><input id="setting-sync-registration-key" type="password" autocomplete="off" placeholder="部署后自动生成"></label>
+                <div class="settings-actions span-2">
+                  <button id="create-android-memory" class="button primary" type="button">一键连接手机</button>
+                  <span id="android-provision-status">由桌面端创建设备，手机只需扫码</span>
+                </div>
+              </div>
+            `}
+            <div id="android-pairing-result" class="android-pairing-result" hidden>
+              <img id="android-pairing-qr" alt="安卓单词记忆配对二维码">
+              <div><strong>用安卓手机相机扫描</strong><p>点击相机识别出的链接，单词记忆应用会自动完成配置。二维码包含设备密钥，请勿转发。</p><button id="copy-android-pairing" class="text-button" type="button">复制备用连接信息</button></div>
+            </div>
+            <details class="android-advanced">
+              <summary>旧版手动配对（高级）</summary>
+              <label class="field">
+                <span>设备配对信息</span>
+                <input id="setting-android-memory-pairing" type="password" autocomplete="off" placeholder="${settings.androidMemoryPaired ? "留空则保留当前连接" : "仅用于兼容旧版安卓端"}">
+              </label>
+            </details>
+            <small class="field-help">服务器只中继 AES-256-GCM 密文；设备密钥使用系统安全存储保存。</small>
+          </div>
+          <div class="android-sync-overview span-2">
+            <div><span>待自动发送</span><strong id="android-memory-pending">0</strong></div>
+            <div><span>已发送</span><strong id="android-memory-synced">0</strong></div>
+            <div class="android-sync-message"><span>同步状态</span><strong id="android-memory-status">等待配对</strong></div>
+            <button id="test-android-memory" class="button subtle" type="button">测试加密通道</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <div class="section-heading">
+          <span class="section-number">05</span>
           <div><h2>软件更新</h2><p>当前版本 v${escapeAttribute(appVersion || "0.0.0")}，可在应用内检查、下载并安装更新。</p></div>
         </div>
         <div class="setting-card">
@@ -398,7 +454,7 @@ function settingsMarkup() {
 
       <section class="settings-section">
         <div class="section-heading">
-          <span class="section-number">05</span>
+          <span class="section-number">06</span>
           <div><h2>系统权限</h2><p>macOS 首次使用需要手动授权。</p></div>
         </div>
         <div class="permission-grid">
@@ -441,6 +497,14 @@ function bindEvents() {
   document
     .querySelector("#back-to-translate")
     ?.addEventListener("click", () => switchView("translate"));
+  document.querySelector(".workspace")?.addEventListener("click", (event) => {
+    const anchor = (event.target as Element | null)?.closest<HTMLAnchorElement>(
+      ".markdown-body a"
+    );
+    if (!anchor) return;
+    event.preventDefault();
+    void window.lingua.openExternal(anchor.href);
+  });
   document
     .querySelector("#capture-button")
     ?.addEventListener("click", () => void window.lingua.startScreenshot());
@@ -448,6 +512,7 @@ function bindEvents() {
     .querySelector("#translate-button")
     ?.addEventListener("click", () => void translateCurrent(false));
   document.querySelector("#source-text")?.addEventListener("input", () => {
+    window.clearTimeout(memoryCaptureTimer);
     updateCount();
     scheduleRealtimeTranslation();
   });
@@ -488,6 +553,18 @@ function bindEvents() {
   document
     .querySelector("#test-provider")
     ?.addEventListener("click", () => void testConnection());
+  document
+    .querySelector("#test-android-memory")
+    ?.addEventListener("click", () => void testAndroidMemory());
+  document
+    .querySelector("#create-android-memory")
+    ?.addEventListener("click", () => void provisionAndroidMemory());
+  document
+    .querySelector("#show-android-pairing")
+    ?.addEventListener("click", () => void showStoredAndroidPairing());
+  document
+    .querySelector("#clear-android-memory-pairing")
+    ?.addEventListener("click", () => void clearAndroidMemoryPairing());
   document
     .querySelector("#open-ollama-download")
     ?.addEventListener("click", () => void window.lingua.openOllamaDownload());
@@ -581,6 +658,158 @@ function switchView(view: string) {
     if (provider === "ollama") void loadOllamaModels();
     if (provider === "codex") void loadCodexModels();
   }
+}
+
+function formatSyncTime(timestamp: number) {
+  return timestamp
+    ? new Intl.DateTimeFormat("zh-CN", {
+        month: "numeric",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit"
+      }).format(new Date(timestamp))
+    : "尚未发送";
+}
+
+function renderMemorySyncStatus(status: MemorySyncStatus) {
+  memorySyncStatus = status;
+  const pending = document.querySelector<HTMLElement>("#android-memory-pending");
+  const synced = document.querySelector<HTMLElement>("#android-memory-synced");
+  const message = document.querySelector<HTMLElement>("#android-memory-status");
+  if (pending) pending.textContent = String(status.pending);
+  if (synced) synced.textContent = String(status.synced);
+  if (message) {
+    message.textContent = status.message || (status.configured
+      ? `上次发送：${formatSyncTime(status.lastSyncedAt)}`
+      : "等待首次配对");
+    message.classList.toggle("error", status.state === "waiting");
+  }
+}
+
+async function testAndroidMemory() {
+  const button = document.querySelector<HTMLButtonElement>("#test-android-memory");
+  const resultNode = document.querySelector<HTMLElement>("#android-memory-status");
+  const pairing = document
+    .querySelector<HTMLInputElement>("#setting-android-memory-pairing")
+    ?.value.trim() || "";
+  if (!button || !resultNode) return;
+  button.disabled = true;
+  resultNode.classList.remove("error");
+  resultNode.textContent = "正在验证加密通道…";
+  try {
+    const result = await window.lingua.testAndroidMemory(pairing);
+    resultNode.textContent = `连接成功 · ${result.serverUrl} · ${result.latencyMs} ms`;
+  } catch (error) {
+    resultNode.textContent = humanizeError(error);
+    resultNode.classList.add("error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function renderAndroidPairing(pairingUri: string) {
+  const panel = document.querySelector<HTMLElement>("#android-pairing-result");
+  const image = document.querySelector<HTMLImageElement>("#android-pairing-qr");
+  const copy = document.querySelector<HTMLButtonElement>("#copy-android-pairing");
+  if (!panel || !image) return;
+  image.src = await QRCode.toDataURL(pairingUri, {
+    errorCorrectionLevel: "M",
+    margin: 2,
+    width: 220,
+    color: { dark: "#172033", light: "#ffffff" }
+  });
+  panel.hidden = false;
+  copy?.addEventListener("click", async () => {
+    await window.lingua.copyText(pairingUri);
+    copy.textContent = "已复制";
+  }, { once: true });
+}
+
+async function provisionAndroidMemory() {
+  const button = document.querySelector<HTMLButtonElement>("#create-android-memory");
+  const status = document.querySelector<HTMLElement>("#android-provision-status");
+  const serverUrl = document
+    .querySelector<HTMLInputElement>("#setting-sync-server-url")
+    ?.value.trim() || "";
+  const registrationKey = document
+    .querySelector<HTMLInputElement>("#setting-sync-registration-key")
+    ?.value.trim() || "";
+  if (!button || !status) return;
+  button.disabled = true;
+  status.classList.remove("error");
+  status.textContent = "正在创建端到端加密设备…";
+  try {
+    const response = await window.lingua.provisionAndroidMemory(
+      serverUrl,
+      registrationKey
+    );
+    settings = response.settings;
+    memorySyncStatus = response.sync;
+    renderMemorySyncStatus(response.sync);
+    await renderAndroidPairing(response.pairingUri);
+    status.textContent = "设备已创建，请用手机扫描下方二维码";
+  } catch (error) {
+    status.textContent = humanizeError(error);
+    status.classList.add("error");
+    button.disabled = false;
+  }
+}
+
+async function showStoredAndroidPairing() {
+  const button = document.querySelector<HTMLButtonElement>("#show-android-pairing");
+  if (!button) return;
+  button.disabled = true;
+  try {
+    await renderAndroidPairing(await window.lingua.getAndroidMemoryPairing());
+    button.textContent = "二维码已显示";
+  } catch (error) {
+    const resultNode = document.querySelector<HTMLElement>("#android-memory-status");
+    if (resultNode) {
+      resultNode.textContent = humanizeError(error);
+      resultNode.classList.add("error");
+    }
+    button.disabled = false;
+  }
+}
+
+async function clearAndroidMemoryPairing() {
+  const response = await window.lingua.clearAndroidMemoryPairing();
+  settings = response.settings;
+  memorySyncStatus = response.sync;
+  renderShell();
+  switchView("settings");
+}
+
+async function captureTranslationForMemory(
+  sourceText: string,
+  result: TranslationResult
+) {
+  if (!sourceText.trim() || !result.translation.trim()) return;
+  try {
+    const response = await window.lingua.captureMemory(sourceText, result);
+    renderMemorySyncStatus(response.sync);
+  } catch {
+    // Translation remains usable if the local memory file cannot be updated.
+  }
+}
+
+function queueMemoryCapture(
+  sourceText: string,
+  result: TranslationResult,
+  automatic: boolean
+) {
+  window.clearTimeout(memoryCaptureTimer);
+  if (!automatic) {
+    void captureTranslationForMemory(sourceText, result);
+    return;
+  }
+  memoryCaptureTimer = window.setTimeout(() => {
+    const currentText =
+      document.querySelector<HTMLTextAreaElement>("#source-text")?.value.trim();
+    if (currentText === sourceText && lastResult) {
+      void captureTranslationForMemory(sourceText, lastResult);
+    }
+  }, 4000);
 }
 
 function refreshProviderFields() {
@@ -844,6 +1073,7 @@ async function translateCurrent(automatic = false) {
     }
     lastTranslatedText = text;
     renderResult(lastResult);
+    queueMemoryCapture(text, lastResult, automatic);
     setStatus(
       lastResult.cacheHit
         ? "已从本地缓存显示"
@@ -887,6 +1117,7 @@ async function enrichCurrentResult(
     if (currentText !== sourceText || lastResult !== coreResult) return;
     lastResult = { ...coreResult, ...enrichment, needsEnrichment: false };
     renderResult(lastResult);
+    queueMemoryCapture(sourceText, lastResult, false);
     setStatus("译文与技术说明已完成");
   } catch {
     if (lastResult === coreResult) {
@@ -923,6 +1154,8 @@ function renderResult(result: TranslationResult) {
   const container = document.querySelector<HTMLDivElement>("#result-content")!;
   container.replaceChildren();
   const abbreviations = result.abbreviations || [];
+  const sourceText =
+    document.querySelector<HTMLTextAreaElement>("#source-text")?.value || "";
 
   const heading = document.createElement("div");
   heading.className = "result-heading";
@@ -957,9 +1190,14 @@ function renderResult(result: TranslationResult) {
   }
   heading.append(label, actions);
 
-  const translation = document.createElement("p");
+  const translation = document.createElement("div");
   translation.className = "translation-text";
-  translation.textContent = result.translation;
+  renderTranslatedText(
+    translation,
+    result.translation,
+    sourceText,
+    result.sourceFormat
+  );
   container.append(heading, translation);
 
   if (result.phonetic) {
@@ -988,8 +1226,6 @@ function renderResult(result: TranslationResult) {
   }
 
   if (result.explanation) {
-    const sourceText =
-      document.querySelector<HTMLTextAreaElement>("#source-text")?.value || "";
     container.append(
       resultSection(
         isSingleEnglishWord(sourceText) ? "名词解析" : "语境说明",
@@ -997,8 +1233,6 @@ function renderResult(result: TranslationResult) {
       )
     );
   } else if (result.needsEnrichment) {
-    const sourceText =
-      document.querySelector<HTMLTextAreaElement>("#source-text")?.value || "";
     const pending = resultSection(
       isSingleEnglishWord(sourceText) ? "名词解析" : "IT 行业解释",
       "正在后台生成用途、典型场景与注意事项…"
@@ -1006,8 +1240,6 @@ function renderResult(result: TranslationResult) {
     pending.classList.add("enrichment-pending");
     container.append(pending);
   } else if (result.enrichmentFailed) {
-    const sourceText =
-      document.querySelector<HTMLTextAreaElement>("#source-text")?.value || "";
     const failed = resultSection(
       isSingleEnglishWord(sourceText) ? "名词解析" : "IT 行业解释",
       "本次技术解释生成失败；译文不受影响，可重新翻译后重试。"
@@ -1090,6 +1322,7 @@ async function translateCurrentAsTechnical(
     lastResult = result;
     lastTranslatedText = sourceText;
     renderResult(result);
+    queueMemoryCapture(sourceText, result, false);
     setStatus("已按技术语境重新翻译");
     if (result.needsEnrichment) {
       void enrichCurrentResult(sourceText, result);
@@ -1153,6 +1386,7 @@ function resultSection(titleText: string, bodyText: string) {
 function clearTranslation() {
   const source = document.querySelector<HTMLTextAreaElement>("#source-text")!;
   window.clearTimeout(realtimeTimer);
+  window.clearTimeout(memoryCaptureTimer);
   source.value = "";
   lastResult = null;
   lastTranslatedText = "";
@@ -1390,6 +1624,12 @@ function collectSettings(): Partial<AppSettings> {
     popupAlwaysOnTop: document.querySelector<HTMLInputElement>(
       "#setting-popup-always-on-top"
     )!.checked,
+    androidMemorySyncEnabled: document.querySelector<HTMLInputElement>(
+      "#setting-android-memory-enabled"
+    )!.checked,
+    androidMemoryPairing: document.querySelector<HTMLInputElement>(
+      "#setting-android-memory-pairing"
+    )!.value.trim(),
     sourceLanguage: settings.sourceLanguage,
     targetLanguage: settings.targetLanguage
   };
@@ -1486,6 +1726,7 @@ function renderUpdateStatus(update: UpdateStatus) {
       downloading: `下载中 ${update.progress || 0}%`,
       development: "开发版本",
       current: "再次检查",
+      repair: "下载修复版",
       error: "重新检查"
   };
   button.textContent = buttonLabels[update.status] || "检查更新";
@@ -1500,6 +1741,10 @@ async function runUpdateAction() {
     }
     if (current.status === "downloaded") {
       await window.lingua.installUpdate();
+      return;
+    }
+    if (current.status === "repair") {
+      await window.lingua.openUpdateRepair();
       return;
     }
     await window.lingua.checkForUpdates();
@@ -1522,6 +1767,8 @@ async function initialize() {
   currentPlatform = appInfo.platform;
   appVersion = appInfo.version;
   renderShell();
+  void window.lingua.getMemorySyncStatus().then(renderMemorySyncStatus);
+  window.lingua.onMemorySyncChanged(renderMemorySyncStatus);
   window.lingua.onUpdateStatus(renderUpdateStatus);
   void window.lingua.getUpdateStatus().then(renderUpdateStatus);
   window.lingua.onTranslationStart(({ text, source }) => {
@@ -1541,6 +1788,7 @@ async function initialize() {
     updateCount();
     lastResult = result;
     renderResult(result);
+    queueMemoryCapture(text, result, false);
     setLoading(false);
     setStatus("已从快速翻译悬浮窗展开");
   });

@@ -24,6 +24,9 @@ interface AppSettings {
   ocrLanguages: string;
   launchAtLogin: boolean;
   popupAlwaysOnTop: boolean;
+  androidMemorySyncEnabled: boolean;
+  androidMemoryPaired: boolean;
+  androidMemoryPairing: string;
   apiKeyConfigured: boolean;
   apiKey: string;
 }
@@ -43,6 +46,7 @@ interface AbbreviationItem {
 interface TranslationResult {
   sourceLanguage: string;
   targetLanguage: string;
+  sourceFormat?: "plain" | "markdown";
   translation: string;
   phonetic: string;
   pronunciationText: string;
@@ -80,6 +84,25 @@ interface LinguaApi {
   setShortcutRecording(active: boolean): Promise<boolean>;
   clearApiKey(): Promise<AppSettings>;
   copyText(text: string): Promise<boolean>;
+  getMemorySyncStatus(): Promise<MemorySyncStatus>;
+  captureMemory(
+    text: string,
+    result: TranslationResult
+  ): Promise<MemoryMutationResult>;
+  testAndroidMemory(pairingValue?: string): Promise<AndroidMemoryTestResult>;
+  provisionAndroidMemory(
+    serverUrl: string,
+    registrationKey: string
+  ): Promise<{
+    settings: AppSettings;
+    sync: MemorySyncStatus;
+    pairingUri: string;
+  }>;
+  getAndroidMemoryPairing(): Promise<string>;
+  clearAndroidMemoryPairing(): Promise<{
+    settings: AppSettings;
+    sync: MemorySyncStatus;
+  }>;
   codexLogin(settings?: Partial<AppSettings>): Promise<{
     ok: boolean;
     message: string;
@@ -133,6 +156,7 @@ interface LinguaApi {
   startScreenshot(): Promise<boolean>;
   openPermissionSettings(kind: "screen" | "accessibility"): Promise<boolean>;
   openOllamaDownload(): Promise<boolean>;
+  openExternal(url: string): Promise<boolean>;
   getAppInfo(): Promise<{
     version: string;
     platform: string;
@@ -142,6 +166,7 @@ interface LinguaApi {
   checkForUpdates(): Promise<UpdateStatus>;
   downloadUpdate(): Promise<UpdateStatus>;
   installUpdate(): Promise<boolean>;
+  openUpdateRepair(): Promise<boolean>;
   onUpdateStatus(callback: (payload: UpdateStatus) => void): () => void;
   onTranslationStart(
     callback: (payload: { text: string; source: string }) => void
@@ -156,6 +181,7 @@ interface LinguaApi {
   onTranslationHydrate(
     callback: (payload: { text: string; result: TranslationResult }) => void
   ): () => void;
+  onMemorySyncChanged(callback: (payload: MemorySyncStatus) => void): () => void;
   onPopupStart(callback: (payload: PopupPayload) => void): () => void;
   popupReady(): Promise<PopupPayload | null>;
   onPopupStatus(
@@ -181,6 +207,31 @@ interface LinguaApi {
   cancelSelection(): Promise<boolean>;
 }
 
+interface MemoryMutationResult {
+  added: number;
+  updated: number;
+  candidateCount: number;
+  sync: MemorySyncStatus;
+}
+
+interface MemorySyncStatus {
+  total: number;
+  pending: number;
+  synced: number;
+  lastSyncedAt: number;
+  configured: boolean;
+  state: "idle" | "syncing" | "success" | "waiting";
+  message: string;
+}
+
+interface AndroidMemoryTestResult {
+  ok: boolean;
+  latencyMs: number;
+  serverUrl: string;
+  deviceId: string;
+  pendingBatches: number;
+}
+
 interface UpdateStatus {
   status:
     | "idle"
@@ -190,6 +241,7 @@ interface UpdateStatus {
     | "downloaded"
     | "current"
     | "error"
+    | "repair"
     | "development";
   message: string;
   progress: number;

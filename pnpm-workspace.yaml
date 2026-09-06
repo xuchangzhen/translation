@@ -1,5 +1,6 @@
 packages:
   - "."
+  - "sync-server"
 
 allowBuilds:
   electron: true
