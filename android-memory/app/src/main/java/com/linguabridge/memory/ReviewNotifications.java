@@ -55,7 +55,7 @@ public final class ReviewNotifications {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
         android.app.Notification notification = new android.app.Notification.Builder(context, REVIEW_CHANNEL)
-                .setSmallIcon(com.linguabridge.memory.R.drawable.ic_launcher)
+                .setSmallIcon(com.linguabridge.memory.R.drawable.ic_notification_sync)
                 .setContentTitle("有 " + due + " 条内容需要复习")
                 .setContentText("先回忆，再查看答案")
                 .setContentIntent(contentIntent)

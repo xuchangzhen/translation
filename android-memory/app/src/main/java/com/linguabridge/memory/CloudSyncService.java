@@ -116,7 +116,7 @@ public final class CloudSyncService extends Service {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
         return new Notification.Builder(this, ReviewNotifications.SYNC_CHANNEL)
-                .setSmallIcon(com.linguabridge.memory.R.drawable.ic_launcher)
+                .setSmallIcon(com.linguabridge.memory.R.drawable.ic_notification_sync)
                 .setContentTitle("单词记忆 · 自动接收已开启")
                 .setContentText(text)
                 .setContentIntent(contentIntent)

@@ -5,6 +5,9 @@ const PROTOCOL = "linguabridge-memory/1";
 const MAX_BODY_BYTES = 1024 * 1024;
 const DEVICE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const TRANSFER_TTL_MS = 15 * 60 * 1000;
+const CLIENT_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 
 function json(response, status, body) {
   const payload = Buffer.from(JSON.stringify(body), "utf8");
@@ -56,7 +59,7 @@ function validToken(value) {
 }
 
 function devicePath(pathname) {
-  const match = pathname.match(/^\/v1\/devices\/([^/]+)(?:\/(status|batches)(?:\/([^/]+)\/ack)?)?$/);
+  const match = pathname.match(/^\/v1\/devices\/([^/]+)(?:\/(status|batches|transfers|clients)(?:\/([^/]+)\/ack)?)?$/);
   if (!match) return null;
   return {
     deviceId: decodeURIComponent(match[1]),
@@ -65,16 +68,32 @@ function devicePath(pathname) {
   };
 }
 
+function transferPath(pathname) {
+  const match = pathname.match(/^\/v1\/transfers\/([^/]+)\/claim$/);
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
+function validEnvelope(envelope) {
+  return envelope?.algorithm === "A256GCM" &&
+    BASE64URL_PATTERN.test(envelope.nonce || "") &&
+    Buffer.from(envelope.nonce || "", "base64url").length === 12 &&
+    BASE64URL_PATTERN.test(envelope.ciphertext || "") &&
+    Buffer.from(envelope.ciphertext || "", "base64url").length >= 17;
+}
+
 export class MemoryRepository {
   constructor() {
     this.devices = new Map();
     this.batches = new Map();
+    this.transfers = new Map();
+    this.clients = new Map();
   }
 
   async createDevice(device) {
     if (this.devices.has(device.id)) return false;
     this.devices.set(device.id, { ...device, createdAt: Date.now(), lastSeenAt: Date.now() });
     this.batches.set(device.id, []);
+    this.clients.set(device.id, new Map());
     return true;
   }
 
@@ -106,6 +125,52 @@ export class MemoryRepository {
     batches.splice(index, 1);
     return true;
   }
+
+  async createTransfer(transfer) {
+    const now = Date.now();
+    for (const [id, candidate] of this.transfers) {
+      if (candidate.expiresAt <= now) this.transfers.delete(id);
+    }
+    if (this.transfers.has(transfer.id)) return false;
+    this.transfers.set(transfer.id, transfer);
+    return true;
+  }
+
+  async claimTransfer(id, accessTokenHash) {
+    const transfer = this.transfers.get(id);
+    if (
+      !transfer ||
+      transfer.expiresAt <= Date.now() ||
+      !safeEqual(transfer.accessTokenHash, accessTokenHash)
+    ) {
+      if (transfer?.expiresAt <= Date.now()) this.transfers.delete(id);
+      return null;
+    }
+    this.transfers.delete(id);
+    return transfer;
+  }
+
+  async upsertClient(deviceId, client) {
+    const now = Date.now();
+    const clients = this.clients.get(deviceId) || new Map();
+    for (const [id, candidate] of clients) {
+      if (candidate.lastSeenAt < now - CLIENT_RETENTION_MS) clients.delete(id);
+    }
+    const previous = clients.get(client.clientId);
+    clients.set(client.clientId, {
+      ...client,
+      firstSeenAt: previous?.firstSeenAt || now,
+      lastSeenAt: now
+    });
+    this.clients.set(deviceId, clients);
+  }
+
+  async listClients(deviceId) {
+    const cutoff = Date.now() - CLIENT_RETENTION_MS;
+    return [...(this.clients.get(deviceId) || new Map()).values()]
+      .filter((client) => client.lastSeenAt >= cutoff)
+      .sort((left, right) => right.lastSeenAt - left.lastSeenAt);
+  }
 }
 
 export function createHandler({ repository, registrationKey, longPollMs = 25_000 }) {
@@ -132,8 +197,12 @@ export function createHandler({ repository, registrationKey, longPollMs = 25_000
     const device = await repository.getDevice(deviceId);
     if (!device) throw Object.assign(new Error("设备不存在"), { status: 404 });
     const token = bearerToken(request);
-    const expected = mode === "read" ? device.readTokenHash : device.uploadTokenHash;
-    if (!validToken(token) || !safeEqual(sha256(token), expected)) {
+    const expected = mode === "read"
+      ? [device.readTokenHash]
+      : mode === "either"
+        ? [device.uploadTokenHash, device.readTokenHash]
+        : [device.uploadTokenHash];
+    if (!validToken(token) || !expected.some((hash) => safeEqual(sha256(token), hash))) {
       throw Object.assign(new Error("设备凭据无效"), { status: 401 });
     }
     await repository.touchDevice(deviceId);
@@ -174,6 +243,27 @@ export function createHandler({ repository, registrationKey, longPollMs = 25_000
         return;
       }
 
+      const transferId = transferPath(url.pathname);
+      if (request.method === "POST" && transferId) {
+        if (!DEVICE_ID_PATTERN.test(transferId)) {
+          throw Object.assign(new Error("接力编号无效"), { status: 400 });
+        }
+        const token = bearerToken(request);
+        if (!validToken(token)) {
+          throw Object.assign(new Error("接力凭据无效"), { status: 401 });
+        }
+        const transfer = await repository.claimTransfer(transferId, sha256(token));
+        if (!transfer) {
+          throw Object.assign(new Error("接力链接已使用或已过期"), { status: 404 });
+        }
+        json(response, 200, {
+          protocol: PROTOCOL,
+          envelope: transfer.envelope,
+          expiresAt: transfer.expiresAt
+        });
+        return;
+      }
+
       const route = devicePath(url.pathname);
       if (!route || !DEVICE_ID_PATTERN.test(route.deviceId)) {
         json(response, 404, { error: "接口不存在" });
@@ -195,11 +285,7 @@ export function createHandler({ repository, registrationKey, longPollMs = 25_000
         const envelope = body.envelope || {};
         if (
           body.protocol !== PROTOCOL ||
-          envelope.algorithm !== "A256GCM" ||
-          !BASE64URL_PATTERN.test(envelope.nonce || "") ||
-          Buffer.from(envelope.nonce || "", "base64url").length !== 12 ||
-          !BASE64URL_PATTERN.test(envelope.ciphertext || "") ||
-          Buffer.from(envelope.ciphertext || "", "base64url").length < 17
+          !validEnvelope(envelope)
         ) {
           throw Object.assign(new Error("加密批次格式无效"), { status: 400 });
         }
@@ -217,6 +303,71 @@ export function createHandler({ repository, registrationKey, longPollMs = 25_000
         await repository.enqueueBatch(route.deviceId, batch);
         events.emit(`batch:${route.deviceId}`);
         json(response, 201, { queued: true, batchId: batch.id });
+        return;
+      }
+
+      if (request.method === "POST" && route.resource === "transfers") {
+        await authorize(request, route.deviceId, "upload");
+        const body = await readJson(request);
+        const envelope = body.envelope || {};
+        if (
+          body.protocol !== PROTOCOL ||
+          !DEVICE_ID_PATTERN.test(body.transferId || "") ||
+          !SHA256_PATTERN.test(body.accessTokenHash || "") ||
+          !validEnvelope(envelope)
+        ) {
+          throw Object.assign(new Error("电脑接力信息无效"), { status: 400 });
+        }
+        const transfer = {
+          id: body.transferId,
+          deviceId: route.deviceId,
+          accessTokenHash: body.accessTokenHash,
+          envelope: {
+            algorithm: "A256GCM",
+            nonce: envelope.nonce,
+            ciphertext: envelope.ciphertext
+          },
+          createdAt: Date.now(),
+          expiresAt: Date.now() + TRANSFER_TTL_MS
+        };
+        const created = await repository.createTransfer(transfer);
+        json(response, created ? 201 : 409, created
+          ? { created: true, expiresAt: transfer.expiresAt, protocol: PROTOCOL }
+          : { error: "接力编号已经存在" });
+        return;
+      }
+
+      if (request.method === "POST" && route.resource === "clients") {
+        await authorize(request, route.deviceId, "upload");
+        const body = await readJson(request);
+        const name = String(body.name || "").trim().slice(0, 80);
+        const platform = String(body.platform || "");
+        const appVersion = String(body.appVersion || "").trim();
+        if (
+          !DEVICE_ID_PATTERN.test(body.clientId || "") ||
+          !name ||
+          !["darwin", "win32", "linux"].includes(platform) ||
+          !/^[A-Za-z0-9._+-]{1,32}$/.test(appVersion)
+        ) {
+          throw Object.assign(new Error("电脑状态信息无效"), { status: 400 });
+        }
+        await repository.upsertClient(route.deviceId, {
+          clientId: body.clientId,
+          name,
+          platform,
+          appVersion
+        });
+        json(response, 200, { updated: true, protocol: PROTOCOL, serverTime: Date.now() });
+        return;
+      }
+
+      if (request.method === "GET" && route.resource === "clients") {
+        await authorize(request, route.deviceId, "either");
+        json(response, 200, {
+          protocol: PROTOCOL,
+          serverTime: Date.now(),
+          clients: await repository.listClients(route.deviceId)
+        });
         return;
       }
 

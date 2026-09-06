@@ -1,4 +1,6 @@
 import "./styles.css";
+import brandIconUrl from "./assets/brand-icon.png";
+import brandIconLightUrl from "./assets/brand-icon-light.png";
 import QRCode from "qrcode";
 import { speakText } from "./speech";
 import { renderTranslatedText } from "./markdown";
@@ -30,8 +32,36 @@ let ollamaCatalogLoading = false;
 let currentPlatform = "";
 let appVersion = "";
 let memorySyncStatus: MemorySyncStatus | null = null;
+let desktopClients: DesktopClientsResult | null = null;
+let resolvedDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
+
+function resolveDarkTheme(mode = settings?.themeMode || "system") {
+  return mode === "dark" || (
+    mode === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches
+  );
+}
+
+function activeBrandIcon() {
+  return resolvedDark ? brandIconUrl : brandIconLightUrl;
+}
+
+function applyResolvedTheme(dark: boolean) {
+  resolvedDark = dark;
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  document.documentElement.style.colorScheme = dark ? "dark" : "light";
+  const shell = document.querySelector<HTMLElement>(".app-shell");
+  if (shell) shell.dataset.theme = dark ? "dark" : "light";
+  const brand = document.querySelector<HTMLImageElement>(".brand-mark img");
+  if (brand) brand.src = activeBrandIcon();
+  const toggle = document.querySelector<HTMLButtonElement>("#quick-theme-toggle");
+  if (toggle) {
+    toggle.title = dark ? "切换到浅色模式" : "切换到深色模式";
+    toggle.setAttribute("aria-label", toggle.title);
+    toggle.dataset.dark = String(dark);
+  }
+}
 
 function languageOptions(selected: string, includeAuto = true) {
   return LANGUAGES.filter(([value]) => includeAuto || value !== "auto")
@@ -94,15 +124,18 @@ function ollamaModelOptions(selected: string, purpose: "translation" | "technica
 
 function renderShell() {
   app.innerHTML = `
-    <div class="app-shell">
+    <div class="app-shell" data-theme="${resolvedDark ? "dark" : "light"}">
       <aside class="rail">
-        <div class="brand-mark" aria-label="翻译">译</div>
+        <div class="brand-mark" aria-label="LinguaBridge"><img src="${activeBrandIcon()}" alt=""></div>
         <nav>
           <button class="rail-button active" data-view="translate" title="翻译">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h10M9 3v2m3 0c-.7 4.1-3.3 7.2-7 9m2.5-5c1.2 2.1 3 3.8 5.5 5M14 20l4-9 4 9m-6.7-3h5.4"/></svg>
           </button>
           <button class="rail-button" data-view="settings" title="设置">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>
+          </button>
+          <button id="open-command-palette" class="rail-button command-trigger" title="快捷动作（⌘K / Ctrl K）">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 1.4 4.1L17.5 8.5l-4.1 1.4L12 14l-1.4-4.1-4.1-1.4 4.1-1.4L12 3Z"/><path d="m18.5 14 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z"/></svg>
           </button>
         </nav>
         <div class="provider-dot" title="当前翻译服务"><span></span></div>
@@ -117,6 +150,10 @@ function renderShell() {
               <h1>选中，即译。</h1>
             </div>
             <div class="quick-actions">
+              <button id="quick-theme-toggle" class="icon-button theme-toggle" title="${resolvedDark ? "切换到浅色模式" : "切换到深色模式"}" aria-label="${resolvedDark ? "切换到浅色模式" : "切换到深色模式"}" data-dark="${resolvedDark}">
+                <svg class="theme-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+                <svg class="theme-moon" viewBox="0 0 24 24"><path d="M20 15.2A8 8 0 0 1 8.8 4a8.2 8.2 0 1 0 11.2 11.2Z"/></svg>
+              </button>
               <button id="capture-button" class="button subtle">
                 <svg viewBox="0 0 24 24"><path d="M4 7V4h3M17 4h3v3M20 17v3h-3M7 20H4v-3M8 9h8v6H8z"/></svg>
                 截图翻译
@@ -183,15 +220,31 @@ function renderShell() {
           ${settingsMarkup()}
         </section>
       </main>
+      <div id="command-palette" class="command-palette" hidden>
+        <button class="command-backdrop" data-command="close" aria-label="关闭快捷动作"></button>
+        <section class="command-dialog" role="dialog" aria-modal="true" aria-label="快捷动作">
+          <div class="command-search"><span>⌘</span><strong>快捷动作</strong><kbd>ESC</kbd></div>
+          <div class="command-list">
+            <button data-command="focus"><span class="command-icon">T</span><span><strong>开始翻译</strong><small>聚焦原文输入框</small></span><kbd>↵</kbd></button>
+            <button data-command="capture"><span class="command-icon">▣</span><span><strong>截图翻译</strong><small>从画面中识别文字</small></span></button>
+            <button data-command="copy"><span class="command-icon">⧉</span><span><strong>复制最近译文</strong><small>复制完整翻译结果</small></span></button>
+            <button data-command="memory"><span class="command-icon">◇</span><span><strong>同步空间</strong><small>管理电脑与安卓自动同步</small></span></button>
+            <button data-command="settings"><span class="command-icon">⚙</span><span><strong>偏好设置</strong><small>模型、快捷键与更新</small></span></button>
+          </div>
+          <p class="command-hint">在任何页面按 <kbd>${currentPlatform === "darwin" ? "⌘ K" : "Ctrl K"}</kbd> 唤起</p>
+        </section>
+      </div>
     </div>
   `;
   bindEvents();
+  applyResolvedTheme(resolvedDark);
   refreshProviderFields();
   refreshSpeechFields();
   void window.lingua.getUpdateStatus().then(renderUpdateStatus);
   if (settings.provider === "codex") void loadCodexModels();
   if (settings.provider === "ollama") void loadOllamaModels();
   if (memorySyncStatus) renderMemorySyncStatus(memorySyncStatus);
+  if (settings.androidMemoryPaired) void refreshDesktopClients();
 }
 
 function providerLabel(provider: Provider) {
@@ -212,7 +265,14 @@ function settingsMarkup() {
         <h1>设置</h1>
         <p>所有设置保存在本机；API Key 使用系统安全存储加密。</p>
       </div>
-      <button id="back-to-translate" class="button subtle">返回翻译</button>
+      <div class="settings-header-actions">
+        <div class="theme-picker" role="group" aria-label="外观模式">
+          <button type="button" data-theme-mode="system" class="${settings.themeMode === "system" ? "active" : ""}">跟随系统</button>
+          <button type="button" data-theme-mode="light" class="${settings.themeMode === "light" ? "active" : ""}">浅色</button>
+          <button type="button" data-theme-mode="dark" class="${settings.themeMode === "dark" ? "active" : ""}">深色</button>
+        </div>
+        <button id="back-to-translate" class="button subtle">返回翻译</button>
+      </div>
     </header>
 
     <div class="settings-layout">
@@ -384,7 +444,7 @@ function settingsMarkup() {
         </div>
       </section>
 
-      <section class="settings-section">
+      <section id="memory-sync-section" class="settings-section">
         <div class="section-heading">
           <span class="section-number">04</span>
           <div><h2>安卓单词记忆</h2><p>翻译完成后自动整理、端到端加密并上传；手机离线时后台自动补传。</p></div>
@@ -397,21 +457,48 @@ function settingsMarkup() {
           <div class="android-pairing span-2">
             ${settings.androidMemoryPaired ? `
               <div class="android-pairing-ready">
-                <div><strong>加密设备已创建 <em class="saved-badge">已安全保存</em></strong><small>手机尚未连接时，重新显示二维码扫描即可。</small></div>
+                <div><strong>同步空间已连接 <em class="saved-badge">端到端加密</em></strong><small>Mac mini、Windows 和安卓可以使用同一个空间，不必重复配对手机。</small></div>
                 <div class="settings-actions">
-                  <button id="show-android-pairing" class="button subtle" type="button">显示手机二维码</button>
+                  <button id="create-desktop-join" class="button primary" type="button">添加另一台电脑</button>
+                  <button id="show-android-pairing" class="button subtle" type="button">手机配对码</button>
                   <button id="clear-android-memory-pairing" class="text-button danger" type="button">解除连接</button>
                 </div>
               </div>
-            ` : `
-              <div class="android-provision-grid">
-                <label class="field"><span>同步服务器</span><input id="setting-sync-server-url" autocomplete="url" placeholder="https://memory.example.com"></label>
-                <label class="field"><span>服务器注册码</span><input id="setting-sync-registration-key" type="password" autocomplete="off" placeholder="部署后自动生成"></label>
-                <div class="settings-actions span-2">
-                  <button id="create-android-memory" class="button primary" type="button">一键连接手机</button>
-                  <span id="android-provision-status">由桌面端创建设备，手机只需扫码</span>
+              <div class="desktop-peers">
+                <div class="desktop-peers-heading">
+                  <div><strong>多端同步状态</strong><small id="desktop-peers-summary">正在读取已连接电脑…</small></div>
+                  <button id="refresh-desktop-clients" class="text-button" type="button">刷新</button>
+                </div>
+                <label class="field desktop-client-name"><span>这台电脑的名称</span><input id="setting-sync-client-name" maxlength="80" value="${escapeAttribute(settings.syncClientName)}"></label>
+                <div id="desktop-client-list" class="desktop-client-list" aria-live="polite">
+                  <div class="desktop-client-skeleton"></div>
+                  <div class="desktop-client-skeleton short"></div>
                 </div>
               </div>
+              <div id="desktop-join-result" class="desktop-join-result" hidden>
+                <span class="desktop-join-icon">✓</span>
+                <div><strong>一次性加入链接已复制</strong><p id="desktop-join-status">在另一台电脑的“加入已有空间”中粘贴。链接 15 分钟后失效，且只能使用一次。</p></div>
+              </div>
+            ` : `
+              <div class="desktop-join-panel">
+                <div><strong>加入已有同步空间</strong><small>在已连接的 Mac mini 上点击“添加另一台电脑”，把生成的链接复制到这里。安卓端无需任何操作。</small></div>
+                <label class="field"><span>一次性电脑加入链接</span><input id="desktop-join-link" type="password" autocomplete="off" placeholder="linguabridge-space://join?…"></label>
+                <div class="settings-actions span-2">
+                  <button id="join-desktop-space" class="button primary" type="button">加入同一空间</button>
+                  <span id="desktop-join-status">只需一次，之后翻译内容会自动汇入同一部手机</span>
+                </div>
+              </div>
+              <details class="android-advanced first-space">
+                <summary>首次使用：创建一个新同步空间</summary>
+                <div class="android-provision-grid">
+                  <label class="field"><span>同步服务器</span><input id="setting-sync-server-url" autocomplete="url" placeholder="https://memory.example.com"></label>
+                  <label class="field"><span>服务器注册码</span><input id="setting-sync-registration-key" type="password" autocomplete="off" placeholder="部署后自动生成"></label>
+                  <div class="settings-actions span-2">
+                    <button id="create-android-memory" class="button subtle" type="button">创建空间并连接手机</button>
+                    <span id="android-provision-status">仅第一台电脑需要使用</span>
+                  </div>
+                </div>
+              </details>
             `}
             <div id="android-pairing-result" class="android-pairing-result" hidden>
               <img id="android-pairing-qr" alt="安卓单词记忆配对二维码">
@@ -497,6 +584,14 @@ function bindEvents() {
   document
     .querySelector("#back-to-translate")
     ?.addEventListener("click", () => switchView("translate"));
+  document
+    .querySelector("#quick-theme-toggle")
+    ?.addEventListener("click", () => void setThemeMode(resolvedDark ? "light" : "dark"));
+  document.querySelectorAll<HTMLButtonElement>("[data-theme-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      void setThemeMode(button.dataset.themeMode as AppSettings["themeMode"]);
+    });
+  });
   document.querySelector(".workspace")?.addEventListener("click", (event) => {
     const anchor = (event.target as Element | null)?.closest<HTMLAnchorElement>(
       ".markdown-body a"
@@ -508,6 +603,9 @@ function bindEvents() {
   document
     .querySelector("#capture-button")
     ?.addEventListener("click", () => void window.lingua.startScreenshot());
+  document
+    .querySelector("#refresh-desktop-clients")
+    ?.addEventListener("click", () => void refreshDesktopClients(true));
   document
     .querySelector("#translate-button")
     ?.addEventListener("click", () => void translateCurrent(false));
@@ -557,6 +655,12 @@ function bindEvents() {
     .querySelector("#test-android-memory")
     ?.addEventListener("click", () => void testAndroidMemory());
   document
+    .querySelector("#create-desktop-join")
+    ?.addEventListener("click", () => void createDesktopJoin());
+  document
+    .querySelector("#join-desktop-space")
+    ?.addEventListener("click", () => void joinDesktopSpace());
+  document
     .querySelector("#create-android-memory")
     ?.addEventListener("click", () => void provisionAndroidMemory());
   document
@@ -565,6 +669,14 @@ function bindEvents() {
   document
     .querySelector("#clear-android-memory-pairing")
     ?.addEventListener("click", () => void clearAndroidMemoryPairing());
+  document
+    .querySelector("#open-command-palette")
+    ?.addEventListener("click", openCommandPalette);
+  document
+    .querySelectorAll<HTMLButtonElement>("[data-command]")
+    .forEach((button) => button.addEventListener("click", () => {
+      void runCommand(button.dataset.command || "close");
+    }));
   document
     .querySelector("#open-ollama-download")
     ?.addEventListener("click", () => void window.lingua.openOllamaDownload());
@@ -660,6 +772,148 @@ function switchView(view: string) {
   }
 }
 
+function openCommandPalette() {
+  const palette = document.querySelector<HTMLElement>("#command-palette");
+  if (!palette) return;
+  palette.hidden = false;
+  requestAnimationFrame(() => {
+    palette.classList.add("open");
+    palette.querySelector<HTMLButtonElement>(".command-list button")?.focus();
+  });
+}
+
+function closeCommandPalette() {
+  const palette = document.querySelector<HTMLElement>("#command-palette");
+  if (!palette || palette.hidden) return;
+  palette.classList.remove("open");
+  window.setTimeout(() => {
+    if (!palette.classList.contains("open")) palette.hidden = true;
+  }, 160);
+}
+
+async function runCommand(command: string) {
+  closeCommandPalette();
+  if (command === "close") return;
+  await new Promise((resolve) => window.setTimeout(resolve, 100));
+  if (command === "capture") {
+    await window.lingua.startScreenshot();
+    return;
+  }
+  if (command === "copy") {
+    if (lastResult?.translation) {
+      await window.lingua.copyText(lastResult.translation);
+      setStatus("最近译文已复制");
+    } else {
+      switchView("translate");
+      setStatus("还没有可以复制的译文");
+    }
+    return;
+  }
+  if (command === "settings" || command === "memory") {
+    switchView("settings");
+    if (command === "memory") {
+      requestAnimationFrame(() => document
+        .querySelector("#memory-sync-section")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    }
+    return;
+  }
+  switchView("translate");
+  document.querySelector<HTMLTextAreaElement>("#source-text")?.focus();
+}
+
+function bindGlobalCommands() {
+  window.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      const palette = document.querySelector<HTMLElement>("#command-palette");
+      if (palette?.classList.contains("open")) closeCommandPalette();
+      else openCommandPalette();
+      return;
+    }
+    if (event.key === "Escape") closeCommandPalette();
+  });
+}
+
+async function setThemeMode(mode: AppSettings["themeMode"]) {
+  settings = await window.lingua.setThemeMode(mode);
+  applyResolvedTheme(resolveDarkTheme(mode));
+  document.querySelectorAll<HTMLButtonElement>("[data-theme-mode]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.themeMode === mode);
+  });
+}
+
+function platformLabel(platform: string) {
+  return {
+    darwin: "Mac",
+    win32: "Windows",
+    linux: "Linux"
+  }[platform] || "电脑";
+}
+
+function relativeClientTime(timestamp: number, serverTime: number) {
+  const elapsed = Math.max(0, serverTime - timestamp);
+  if (elapsed < 60_000) return "刚刚在线";
+  if (elapsed < 60 * 60_000) return `${Math.floor(elapsed / 60_000)} 分钟前`;
+  if (elapsed < 24 * 60 * 60_000) return `${Math.floor(elapsed / (60 * 60_000))} 小时前`;
+  return `${Math.floor(elapsed / (24 * 60 * 60_000))} 天前`;
+}
+
+function renderDesktopClients(result: DesktopClientsResult) {
+  desktopClients = result;
+  const list = document.querySelector<HTMLElement>("#desktop-client-list");
+  const summary = document.querySelector<HTMLElement>("#desktop-peers-summary");
+  if (!list || !summary) return;
+  const clients = [...result.clients].sort((left, right) =>
+    Number(right.clientId === settings.syncClientId) - Number(left.clientId === settings.syncClientId) ||
+    right.lastSeenAt - left.lastSeenAt
+  );
+  const onlineCount = clients.filter(
+    (client) => Math.abs(result.serverTime - client.lastSeenAt) < 5 * 60_000
+  ).length;
+  summary.textContent = clients.length
+    ? `${clients.length} 台电脑 · ${onlineCount} 台在线 · 手机共用同一同步空间`
+    : "尚未记录电脑状态";
+  if (!clients.length) {
+    list.innerHTML = '<p class="desktop-clients-empty">本机将在下一次心跳后显示。</p>';
+    return;
+  }
+  list.innerHTML = clients.map((client) => {
+    const online = Math.abs(result.serverTime - client.lastSeenAt) < 5 * 60_000;
+    const current = client.clientId === settings.syncClientId;
+    return `
+      <article class="desktop-client ${online ? "online" : ""}">
+        <span class="desktop-client-platform">${client.platform === "darwin" ? "⌘" : client.platform === "win32" ? "⊞" : "◇"}</span>
+        <span class="desktop-client-copy">
+          <strong>${escapeAttribute(client.name)} ${current ? '<em>本机</em>' : ""}</strong>
+          <small>${escapeAttribute(platformLabel(client.platform))} · v${escapeAttribute(client.appVersion || "—")} · ${relativeClientTime(client.lastSeenAt, result.serverTime)}</small>
+        </span>
+        <i title="${online ? "在线" : "离线"}"></i>
+      </article>`;
+  }).join("");
+}
+
+async function refreshDesktopClients(manual = false) {
+  if (!settings.androidMemoryPaired) return;
+  const button = document.querySelector<HTMLButtonElement>("#refresh-desktop-clients");
+  const summary = document.querySelector<HTMLElement>("#desktop-peers-summary");
+  if (manual && button) {
+    button.disabled = true;
+    button.textContent = "刷新中…";
+  }
+  try {
+    renderDesktopClients(await window.lingua.getDesktopClients());
+  } catch (error) {
+    if (summary) summary.textContent = `暂时无法读取：${humanizeError(error)}`;
+    if (desktopClients) renderDesktopClients(desktopClients);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "刷新";
+    }
+  }
+}
+
 function formatSyncTime(timestamp: number) {
   return timestamp
     ? new Intl.DateTimeFormat("zh-CN", {
@@ -723,6 +977,65 @@ async function renderAndroidPairing(pairingUri: string) {
     await window.lingua.copyText(pairingUri);
     copy.textContent = "已复制";
   }, { once: true });
+}
+
+async function createDesktopJoin() {
+  const button = document.querySelector<HTMLButtonElement>("#create-desktop-join");
+  const panel = document.querySelector<HTMLElement>("#desktop-join-result");
+  const status = document.querySelector<HTMLElement>("#desktop-join-status");
+  if (!button || !panel || !status) return;
+  button.disabled = true;
+  button.textContent = "正在生成…";
+  panel.hidden = true;
+  try {
+    const result = await window.lingua.createDesktopJoinLink();
+    await window.lingua.copyText(result.joinLink);
+    const expires = new Intl.DateTimeFormat("zh-CN", {
+      hour: "2-digit",
+      minute: "2-digit"
+    }).format(new Date(result.expiresAt));
+    status.textContent = `已复制到剪贴板 · ${expires} 前有效 · 使用一次后立即失效`;
+    panel.hidden = false;
+    button.textContent = "重新生成链接";
+  } catch (error) {
+    status.textContent = humanizeError(error);
+    status.classList.add("error");
+    panel.hidden = false;
+    button.textContent = "重试添加电脑";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function joinDesktopSpace() {
+  const button = document.querySelector<HTMLButtonElement>("#join-desktop-space");
+  const input = document.querySelector<HTMLInputElement>("#desktop-join-link");
+  const status = document.querySelector<HTMLElement>("#desktop-join-status");
+  if (!button || !input || !status) return;
+  if (!input.value.trim()) {
+    status.textContent = "请先粘贴另一台电脑生成的一次性链接";
+    status.classList.add("error");
+    input.focus();
+    return;
+  }
+  button.disabled = true;
+  status.classList.remove("error");
+  status.textContent = "正在安全加入同步空间…";
+  try {
+    const response = await window.lingua.claimDesktopJoinLink(input.value.trim());
+    input.value = "";
+    settings = response.settings;
+    memorySyncStatus = response.sync;
+    renderShell();
+    switchView("settings");
+    renderMemorySyncStatus(response.sync);
+    document.querySelector("#memory-sync-section")
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (error) {
+    status.textContent = humanizeError(error);
+    status.classList.add("error");
+    button.disabled = false;
+  }
 }
 
 async function provisionAndroidMemory() {
@@ -1570,6 +1883,10 @@ function validateShortcuts() {
 
 function collectSettings(): Partial<AppSettings> {
   return {
+    themeMode: settings.themeMode,
+    syncClientName:
+      document.querySelector<HTMLInputElement>("#setting-sync-client-name")
+        ?.value.trim() || settings.syncClientName,
     provider: document.querySelector<HTMLSelectElement>("#setting-provider")!
       .value as Provider,
     ollamaUrl:
@@ -1764,11 +2081,21 @@ async function initialize() {
     window.lingua.getAppInfo()
   ]);
   settings = storedSettings;
+  resolvedDark = resolveDarkTheme(settings.themeMode);
   currentPlatform = appInfo.platform;
   appVersion = appInfo.version;
+  bindGlobalCommands();
   renderShell();
   void window.lingua.getMemorySyncStatus().then(renderMemorySyncStatus);
   window.lingua.onMemorySyncChanged(renderMemorySyncStatus);
+  window.lingua.onDesktopClientsChanged(renderDesktopClients);
+  window.lingua.onThemeChanged(({ mode, dark }) => {
+    settings.themeMode = mode;
+    applyResolvedTheme(dark);
+    document.querySelectorAll<HTMLButtonElement>("[data-theme-mode]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.themeMode === mode);
+    });
+  });
   window.lingua.onUpdateStatus(renderUpdateStatus);
   void window.lingua.getUpdateStatus().then(renderUpdateStatus);
   window.lingua.onTranslationStart(({ text, source }) => {

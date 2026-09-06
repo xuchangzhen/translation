@@ -1,6 +1,9 @@
 type Provider = "ollama" | "google" | "openai" | "compatible" | "codex";
 
 interface AppSettings {
+  themeMode: "system" | "light" | "dark";
+  syncClientId: string;
+  syncClientName: string;
   provider: Provider;
   sourceLanguage: string;
   targetLanguage: string;
@@ -81,10 +84,12 @@ interface LinguaApi {
   saveSettings(
     settings: Partial<AppSettings>
   ): Promise<{ settings: AppSettings; shortcutFailures: string[] }>;
+  setThemeMode(mode: AppSettings["themeMode"]): Promise<AppSettings>;
   setShortcutRecording(active: boolean): Promise<boolean>;
   clearApiKey(): Promise<AppSettings>;
   copyText(text: string): Promise<boolean>;
   getMemorySyncStatus(): Promise<MemorySyncStatus>;
+  getDesktopClients(): Promise<DesktopClientsResult>;
   captureMemory(
     text: string,
     result: TranslationResult
@@ -99,6 +104,16 @@ interface LinguaApi {
     pairingUri: string;
   }>;
   getAndroidMemoryPairing(): Promise<string>;
+  createDesktopJoinLink(): Promise<{
+    joinLink: string;
+    expiresAt: number;
+    deviceId: string;
+  }>;
+  claimDesktopJoinLink(joinLink: string): Promise<{
+    settings: AppSettings;
+    sync: MemorySyncStatus;
+    connection: AndroidMemoryTestResult;
+  }>;
   clearAndroidMemoryPairing(): Promise<{
     settings: AppSettings;
     sync: MemorySyncStatus;
@@ -182,6 +197,8 @@ interface LinguaApi {
     callback: (payload: { text: string; result: TranslationResult }) => void
   ): () => void;
   onMemorySyncChanged(callback: (payload: MemorySyncStatus) => void): () => void;
+  onDesktopClientsChanged(callback: (payload: DesktopClientsResult) => void): () => void;
+  onThemeChanged(callback: (payload: { mode: AppSettings["themeMode"]; dark: boolean }) => void): () => void;
   onPopupStart(callback: (payload: PopupPayload) => void): () => void;
   popupReady(): Promise<PopupPayload | null>;
   onPopupStatus(
@@ -222,6 +239,20 @@ interface MemorySyncStatus {
   configured: boolean;
   state: "idle" | "syncing" | "success" | "waiting";
   message: string;
+}
+
+interface DesktopClient {
+  clientId: string;
+  name: string;
+  platform: "darwin" | "win32" | "linux" | string;
+  appVersion: string;
+  firstSeenAt: number;
+  lastSeenAt: number;
+}
+
+interface DesktopClientsResult {
+  serverTime: number;
+  clients: DesktopClient[];
 }
 
 interface AndroidMemoryTestResult {

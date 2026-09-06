@@ -102,3 +102,23 @@ test("enables automatic Android memory delivery by default", () => {
     fs.rmSync(userDataPath, { recursive: true, force: true });
   }
 });
+
+test("creates a stable desktop identity and persists the selected theme", () => {
+  const userDataPath = fs.mkdtempSync(
+    path.join(os.tmpdir(), "translation-settings-")
+  );
+  try {
+    const store = new SettingsStore(userDataPath);
+    assert.match(store.data.syncClientId, /^[0-9a-f-]{36}$/i);
+    assert.ok(store.data.syncClientName);
+    assert.equal(store.data.themeMode, "system");
+
+    store.update({ themeMode: "light", syncClientName: "书房 Mac mini" });
+    const reloaded = new SettingsStore(userDataPath);
+    assert.equal(reloaded.data.syncClientId, store.data.syncClientId);
+    assert.equal(reloaded.data.syncClientName, "书房 Mac mini");
+    assert.equal(reloaded.data.themeMode, "light");
+  } finally {
+    fs.rmSync(userDataPath, { recursive: true, force: true });
+  }
+});

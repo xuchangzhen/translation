@@ -6,6 +6,7 @@ coverage/
 .DS_Store
 .vite/
 /android-memory/.gradle/
+/android-memory/local.properties
 /android-memory/build/
 /android-memory/app/build/
 /sync-server/.env

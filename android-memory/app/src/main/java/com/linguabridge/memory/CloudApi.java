@@ -1,5 +1,6 @@
 package com.linguabridge.memory;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -78,6 +79,36 @@ public final class CloudApi {
                 12_000
         );
         if (!response.optBoolean("acknowledged")) throw new IllegalStateException("服务器未确认批次");
+    }
+
+    public static String desktopSummary(SyncConfig config) throws Exception {
+        JSONObject response = request(
+                config.serverUrl + "/v1/devices/" + config.deviceId + "/clients",
+                "GET",
+                null,
+                "Authorization",
+                "Bearer " + config.readToken,
+                12_000
+        );
+        if (!"linguabridge-memory/1".equals(response.optString("protocol"))) {
+            throw new IllegalStateException("服务器版本不兼容");
+        }
+        long serverTime = response.optLong("serverTime", System.currentTimeMillis());
+        JSONArray clients = response.optJSONArray("clients");
+        if (clients == null || clients.length() == 0) return "尚未发现在线电脑";
+        int online = 0;
+        StringBuilder names = new StringBuilder();
+        for (int index = 0; index < clients.length(); index++) {
+            JSONObject client = clients.optJSONObject(index);
+            if (client == null) continue;
+            boolean active = Math.abs(serverTime - client.optLong("lastSeenAt", 0)) < 5 * 60_000;
+            if (active) online++;
+            if (index < 3) {
+                if (names.length() > 0) names.append(" · ");
+                names.append(client.optString("name", "电脑"));
+            }
+        }
+        return clients.length() + " 台电脑 · " + online + " 台在线\n" + names;
     }
 
     private static String normalizeServerUrl(String raw) throws Exception {

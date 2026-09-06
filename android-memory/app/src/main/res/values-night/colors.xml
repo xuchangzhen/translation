@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="blue">#A878FF</color>
+    <color name="surface">#09080E</color>
+    <color name="white">#FFFFFF</color>
+    <color name="navigation">#100D17</color>
+</resources>

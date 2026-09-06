@@ -95,3 +95,121 @@ test("rejects wrong registration and device tokens", async () => {
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test("reports desktop presence and allows the paired phone to read it", async () => {
+  const repository = new MemoryRepository();
+  const server = http.createServer(createHandler({ repository, registrationKey }));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const deviceId = crypto.randomUUID();
+  const clientId = crypto.randomUUID();
+  const uploadToken = crypto.randomBytes(32).toString("base64url");
+  const readToken = crypto.randomBytes(32).toString("base64url");
+  try {
+    assert.equal((await request(port, "POST", "/v1/devices", {
+      deviceId,
+      uploadToken,
+      readToken
+    }, { "X-Registration-Key": registrationKey })).status, 201);
+
+    const heartbeat = await request(
+      port,
+      "POST",
+      `/v1/devices/${deviceId}/clients`,
+      { clientId, name: "Mac mini", platform: "darwin", appVersion: "0.8.0" },
+      { Authorization: `Bearer ${uploadToken}` }
+    );
+    assert.equal(heartbeat.status, 200);
+    assert.equal(heartbeat.body.updated, true);
+
+    const visibleToPhone = await request(
+      port,
+      "GET",
+      `/v1/devices/${deviceId}/clients`,
+      null,
+      { Authorization: `Bearer ${readToken}` }
+    );
+    assert.equal(visibleToPhone.status, 200);
+    assert.equal(visibleToPhone.body.clients.length, 1);
+    assert.equal(visibleToPhone.body.clients[0].name, "Mac mini");
+    assert.equal(visibleToPhone.body.clients[0].clientId, clientId);
+
+    const denied = await request(
+      port,
+      "GET",
+      `/v1/devices/${deviceId}/clients`,
+      null,
+      { Authorization: `Bearer ${crypto.randomBytes(32).toString("base64url")}` }
+    );
+    assert.equal(denied.status, 401);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("relays a one-time encrypted desktop join without seeing its contents", async () => {
+  const repository = new MemoryRepository();
+  const server = http.createServer(createHandler({ repository, registrationKey }));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const deviceId = crypto.randomUUID();
+  const uploadToken = crypto.randomBytes(32).toString("base64url");
+  const readToken = crypto.randomBytes(32).toString("base64url");
+  const transferId = crypto.randomUUID();
+  const accessToken = crypto.randomBytes(32).toString("base64url");
+  const nonce = crypto.randomBytes(12).toString("base64url");
+  const ciphertext = crypto.randomBytes(128).toString("base64url");
+  try {
+    const createdDevice = await request(port, "POST", "/v1/devices", {
+      deviceId,
+      uploadToken,
+      readToken
+    }, { "X-Registration-Key": registrationKey });
+    assert.equal(createdDevice.status, 201);
+
+    const createdTransfer = await request(
+      port,
+      "POST",
+      `/v1/devices/${deviceId}/transfers`,
+      {
+        protocol: "linguabridge-memory/1",
+        transferId,
+        accessTokenHash: crypto.createHash("sha256").update(accessToken).digest("hex"),
+        envelope: { algorithm: "A256GCM", nonce, ciphertext }
+      },
+      { Authorization: `Bearer ${uploadToken}` }
+    );
+    assert.equal(createdTransfer.status, 201);
+
+    const wrongClaim = await request(
+      port,
+      "POST",
+      `/v1/transfers/${transferId}/claim`,
+      {},
+      { Authorization: `Bearer ${crypto.randomBytes(32).toString("base64url")}` }
+    );
+    assert.equal(wrongClaim.status, 404);
+
+    const claimed = await request(
+      port,
+      "POST",
+      `/v1/transfers/${transferId}/claim`,
+      {},
+      { Authorization: `Bearer ${accessToken}` }
+    );
+    assert.equal(claimed.status, 200);
+    assert.equal(claimed.body.envelope.ciphertext, ciphertext);
+    assert.equal(JSON.stringify(claimed.body).includes(uploadToken), false);
+
+    const replayed = await request(
+      port,
+      "POST",
+      `/v1/transfers/${transferId}/claim`,
+      {},
+      { Authorization: `Bearer ${accessToken}` }
+    );
+    assert.equal(replayed.status, 404);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

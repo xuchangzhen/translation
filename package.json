@@ -1,6 +1,6 @@
 {
   "name": "translation",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "description": "跨平台全局划词与截图翻译工具",
   "main": "src/main.cjs",
@@ -59,6 +59,7 @@
       "src/main.cjs",
       "src/preload.cjs",
       "src/lib/**/*",
+      "build/icon*.png",
       "package.json",
       "!node_modules/uiohook-napi/build/**"
     ],

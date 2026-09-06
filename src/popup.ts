@@ -1,4 +1,6 @@
 import "./styles.css";
+import brandIconUrl from "./assets/brand-icon.png";
+import brandIconLightUrl from "./assets/brand-icon-light.png";
 import { speakText } from "./speech";
 import { renderTranslatedText } from "./markdown";
 
@@ -18,6 +20,21 @@ let sourceText = "";
 let currentResult: TranslationResult | null = null;
 let providerName = "翻译服务";
 let currentTargetLanguage = "zh-CN";
+let currentThemeMode: AppSettings["themeMode"] = "system";
+
+function resolveDarkTheme(mode = currentThemeMode) {
+  return mode === "dark" || (
+    mode === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches
+  );
+}
+
+function applyPopupTheme(mode: AppSettings["themeMode"], dark = resolveDarkTheme(mode)) {
+  currentThemeMode = mode;
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  document.documentElement.style.colorScheme = dark ? "dark" : "light";
+  const logo = document.querySelector<HTMLImageElement>(".popup-logo");
+  if (logo) logo.src = dark ? brandIconUrl : brandIconLightUrl;
+}
 
 function icon(name: "close" | "copy" | "speaker" | "expand") {
   const paths = {
@@ -34,7 +51,7 @@ function shell(content: string, source: string) {
   return `
     <section class="quick-popup">
       <header class="popup-header">
-        <div class="popup-title"><span class="popup-logo">译</span><strong>${label}</strong><i>${providerName}</i></div>
+        <div class="popup-title"><img class="popup-logo" src="${resolveDarkTheme() ? brandIconUrl : brandIconLightUrl}" alt="" /><strong>${label}</strong><i>${providerName}</i></div>
         <button id="popup-close" class="popup-icon-button" title="关闭">${icon("close")}</button>
       </header>
       ${content}
@@ -444,6 +461,7 @@ window.addEventListener("keydown", (event) => {
 
 async function initialize() {
   const settings = await window.lingua.getSettings();
+  applyPopupTheme(settings.themeMode);
   currentTargetLanguage = normalizedTargetLanguage(settings.targetLanguage);
   providerName =
     {
@@ -453,6 +471,7 @@ async function initialize() {
       openai: "OpenAI",
       compatible: "兼容接口"
     }[settings.provider] || "翻译服务";
+  window.lingua.onThemeChanged(({ mode, dark }) => applyPopupTheme(mode, dark));
   window.lingua.onPopupStart((payload) => void handlePayload(payload));
   window.lingua.onPopupStatus(({ message, progress, error }) => {
     if (error) {

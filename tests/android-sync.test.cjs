@@ -3,10 +3,14 @@ const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 const http = require("node:http");
 const {
+  claimDesktopJoinLink,
+  createDesktopJoinLink,
   decryptBatch,
   encryptBatch,
+  listDesktopClients,
   parsePairing,
   provisionAndroidMemoryConnection,
+  reportDesktopPresence,
   syncAndroidMemory,
   testAndroidMemoryConnection
 } = require("../src/lib/android-sync.cjs");
@@ -140,6 +144,47 @@ test("tests the cloud relay and uploads ciphertext only", async () => {
     assert.doesNotMatch(serialized, /cache|缓存/);
     assert.equal(requests[0].envelope.algorithm, "A256GCM");
     assert.deepEqual(decryptBatch(requests[0].envelope, key).items, [item]);
+  } finally {
+    await close(server);
+  }
+});
+
+test("adds another desktop to the same phone space through a one-time encrypted link", async () => {
+  const { createHandler, MemoryRepository } = await import("../sync-server/src/app.mjs");
+  const registrationKey = crypto.randomBytes(32).toString("base64url");
+  const repository = new MemoryRepository();
+  const server = http.createServer(createHandler({ repository, registrationKey }));
+  await listen(server);
+  try {
+    const port = server.address().port;
+    const original = await provisionAndroidMemoryConnection(
+      `http://127.0.0.1:${port}`,
+      registrationKey
+    );
+    const transfer = await createDesktopJoinLink(original.pairingUri, "Mac mini");
+    assert.match(transfer.joinLink, /^linguabridge-space:\/\/join\?/);
+    assert.doesNotMatch(transfer.joinLink, new RegExp(original.encryptionKey));
+
+    const claimed = await claimDesktopJoinLink(transfer.joinLink);
+    assert.equal(claimed.computerName, "Mac mini");
+    assert.deepEqual(parsePairing(claimed.pairingUri), parsePairing(original.pairingUri));
+    assert.equal(claimed.connection.deviceId, original.deviceId);
+
+    const clientId = crypto.randomUUID();
+    await reportDesktopPresence(claimed.pairingUri, {
+      clientId,
+      name: "Windows 工作站",
+      platform: "win32",
+      appVersion: "0.8.0"
+    });
+    const presence = await listDesktopClients(original.pairingUri);
+    assert.equal(presence.clients[0].clientId, clientId);
+    assert.equal(presence.clients[0].name, "Windows 工作站");
+
+    await assert.rejects(
+      () => claimDesktopJoinLink(transfer.joinLink),
+      /已使用或已过期/
+    );
   } finally {
     await close(server);
   }

@@ -1,5 +1,6 @@
 const path = require("node:path");
 const fs = require("node:fs");
+const os = require("node:os");
 const { execFile } = require("node:child_process");
 const { autoUpdater } = require("electron-updater");
 const {
@@ -12,14 +13,19 @@ const {
   globalShortcut,
   ipcMain,
   nativeImage,
+  nativeTheme,
   screen,
   shell
 } = require("electron");
 const { DEFAULT_SETTINGS, SettingsStore } = require("./lib/settings.cjs");
 const { MemoryOutboxStore } = require("./lib/memory.cjs");
 const {
+  claimDesktopJoinLink,
+  createDesktopJoinLink,
+  listDesktopClients,
   parsePairing,
   provisionAndroidMemoryConnection,
+  reportDesktopPresence,
   syncAndroidMemory,
   testAndroidMemoryConnection
 } = require("./lib/android-sync.cjs");
@@ -93,6 +99,7 @@ let tray;
 let store;
 let memoryOutbox;
 let androidMemorySyncTimer;
+let desktopPresenceTimer;
 let androidMemorySyncInFlight = null;
 let isQuitting = false;
 let suppressMainWindowActivation = false;
@@ -126,6 +133,37 @@ let updateState = {
 let secureMacUpdater = null;
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
+
+function runtimeIconPath(useDark = nativeTheme.shouldUseDarkColors) {
+  return path.join(__dirname, "..", "build", useDark ? "icon.png" : "icon-light.png");
+}
+
+function applyRuntimeIcon() {
+  const icon = nativeImage.createFromPath(runtimeIconPath());
+  if (icon.isEmpty()) return;
+  if (process.platform === "darwin" && app.dock) app.dock.setIcon(icon);
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setIcon(icon);
+}
+
+function applyThemeMode() {
+  nativeTheme.themeSource = ["light", "dark"].includes(store?.data?.themeMode)
+    ? store.data.themeMode
+    : "system";
+  applyRuntimeIcon();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setBackgroundColor(nativeTheme.shouldUseDarkColors ? "#09080e" : "#f7f4fb");
+    mainWindow.webContents.send("theme:changed", {
+      mode: store?.data?.themeMode || "system",
+      dark: nativeTheme.shouldUseDarkColors
+    });
+  }
+  if (popupWindow && !popupWindow.isDestroyed()) {
+    popupWindow.webContents.send("theme:changed", {
+      mode: store?.data?.themeMode || "system",
+      dark: nativeTheme.shouldUseDarkColors
+    });
+  }
+}
 
 function enterBackgroundWindowMode() {
   if (process.platform !== "darwin") return;
@@ -237,7 +275,8 @@ function createMainWindow() {
     minHeight: 620,
     show: false,
     title: "翻译",
-    backgroundColor: "#f5f5f7",
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#09080e" : "#f7f4fb",
+    icon: runtimeIconPath(),
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -247,10 +286,17 @@ function createMainWindow() {
     }
   });
 
-  mainWindow.loadURL(rendererUrl());
-  mainWindow.once("ready-to-show", () => mainWindow.show());
   if (process.env.LINGUABRIDGE_SCREENSHOT_PATH) {
     mainWindow.webContents.once("did-finish-load", async () => {
+      await mainWindow.webContents.executeJavaScript(`
+        (async () => {
+          document.documentElement.classList.add("qa-screenshot");
+          await document.fonts.ready;
+          await Promise.all([...document.images].map((image) =>
+            image.complete ? Promise.resolve() : image.decode().catch(() => {})
+          ));
+        })()
+      `);
       if (process.env.LINGUABRIDGE_SMOKE_AUTOTYPE) {
         const smokeText = JSON.stringify(
           process.env.LINGUABRIDGE_SMOKE_AUTOTYPE
@@ -281,11 +327,17 @@ function createMainWindow() {
           })()
         `);
       }
+      if (process.env.LINGUABRIDGE_SMOKE_COMMAND === "1") {
+        await mainWindow.webContents.executeJavaScript(`
+          document.querySelector("#open-command-palette")?.click()
+        `);
+      }
       if (process.env.LINGUABRIDGE_SMOKE_SECTION) {
         const smokeSection = JSON.stringify(
           {
             shortcuts: "全局操作",
-            speech: "语音朗读"
+            speech: "语音朗读",
+            memory: "安卓单词记忆"
           }[process.env.LINGUABRIDGE_SMOKE_SECTION] ||
             process.env.LINGUABRIDGE_SMOKE_SECTION
         );
@@ -328,6 +380,8 @@ function createMainWindow() {
       }, smokeDelay);
     });
   }
+  mainWindow.once("ready-to-show", () => mainWindow.show());
+  mainWindow.loadURL(rendererUrl());
   mainWindow.on("close", (event) => {
     if (!isQuitting) {
       event.preventDefault();
@@ -557,6 +611,12 @@ function sendStatus(message, progress) {
 }
 
 function memorySyncConfigured(settings = store?.data) {
+  if (process.env.LINGUABRIDGE_SCREENSHOT_PATH) {
+    return Boolean(
+      settings?.androidMemorySyncEnabled &&
+      settings?.androidMemoryPairingEncrypted
+    );
+  }
   return Boolean(
     settings?.androidMemorySyncEnabled &&
     store?.androidMemoryPairing()
@@ -617,6 +677,60 @@ async function runAndroidMemorySync() {
       androidMemorySyncInFlight = null;
     });
   return androidMemorySyncInFlight;
+}
+
+async function refreshDesktopPresence() {
+  if (process.env.LINGUABRIDGE_SCREENSHOT_PATH) {
+    const serverTime = Date.now();
+    return {
+      serverTime,
+      clients: [
+        {
+          clientId: store.data.syncClientId,
+          name: store.data.syncClientName || "Mac mini",
+          platform: "darwin",
+          appVersion: app.getVersion(),
+          firstSeenAt: serverTime - 7 * 24 * 60 * 60 * 1000,
+          lastSeenAt: serverTime - 18 * 1000
+        },
+        {
+          clientId: "e307f63f-02dd-4dbc-923a-aac63d11b8f5",
+          name: "Windows 工作站",
+          platform: "win32",
+          appVersion: app.getVersion(),
+          firstSeenAt: serverTime - 5 * 24 * 60 * 60 * 1000,
+          lastSeenAt: serverTime - 84 * 1000
+        }
+      ]
+    };
+  }
+  if (!memorySyncConfigured()) return { serverTime: Date.now(), clients: [] };
+  const pairing = store.androidMemoryPairing();
+  await reportDesktopPresence(pairing, {
+    clientId: store.data.syncClientId,
+    name: store.data.syncClientName,
+    platform: process.platform,
+    appVersion: app.getVersion()
+  });
+  const result = await listDesktopClients(pairing);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("desktop-clients:changed", result);
+  }
+  return result;
+}
+
+function scheduleDesktopPresence(delay = 0) {
+  clearTimeout(desktopPresenceTimer);
+  if (!memorySyncConfigured() || process.env.LINGUABRIDGE_SCREENSHOT_PATH) return;
+  desktopPresenceTimer = setTimeout(async () => {
+    try {
+      await refreshDesktopPresence();
+    } catch {
+      // Presence is best-effort and must never interrupt translation or syncing.
+    } finally {
+      if (!isQuitting) scheduleDesktopPresence(2 * 60 * 1000);
+    }
+  }, Math.max(0, delay));
 }
 
 function setUpdateState(patch) {
@@ -1243,6 +1357,11 @@ function registerIpc() {
     return true;
   });
   ipcMain.handle("settings:get", () => store.publicValue());
+  ipcMain.handle("theme:set", (_event, mode) => {
+    const settings = store.update({ themeMode: mode });
+    applyThemeMode();
+    return settings;
+  });
   ipcMain.handle("settings:save", (_event, patch) => {
     for (const [key, label] of [
       ["selectionShortcut", "划词翻译"],
@@ -1260,6 +1379,7 @@ function registerIpc() {
     }
     const previousPopupAlwaysOnTop = store.data.popupAlwaysOnTop;
     const settings = store.update(patch || {});
+    applyThemeMode();
     translationCache.clear();
     enrichmentCache.clear();
     speechCache.clear();
@@ -1278,6 +1398,7 @@ function registerIpc() {
         .catch(() => {});
     }
     scheduleAndroidMemorySync(0);
+    scheduleDesktopPresence(100);
     return { settings, shortcutFailures };
   });
   ipcMain.handle("settings:clear-api-key", () =>
@@ -1288,6 +1409,7 @@ function registerIpc() {
     return true;
   });
   ipcMain.handle("memory:sync-status", () => sendMemorySyncStatus());
+  ipcMain.handle("memory:desktop-clients", () => refreshDesktopPresence());
   ipcMain.handle("memory:capture", (_event, payload) => {
     const sourceText = String(payload?.text || "").trim();
     if (!sourceText || !payload?.result || typeof payload.result !== "object") {
@@ -1296,6 +1418,7 @@ function registerIpc() {
     const summary = memoryOutbox.capture(sourceText, payload.result);
     const sync = sendMemorySyncStatus();
     scheduleAndroidMemorySync(0);
+    scheduleDesktopPresence(100);
     return { ...summary, sync };
   });
   ipcMain.handle("memory:test-android", (_event, pairingValue) => {
@@ -1313,6 +1436,7 @@ function registerIpc() {
     });
     const sync = sendMemorySyncStatus();
     scheduleAndroidMemorySync(0);
+    scheduleDesktopPresence(100);
     return { settings, sync, pairingUri: provisioned.pairingUri };
   });
   ipcMain.handle("memory:get-phone-pairing", () => {
@@ -1324,9 +1448,29 @@ function registerIpc() {
     }
     return pairingUri;
   });
+  ipcMain.handle("memory:create-desktop-join", () => {
+    const pairingUri = store.androidMemoryPairing();
+    if (!pairingUri) throw new Error("请先创建或加入同步空间");
+    return createDesktopJoinLink(pairingUri, os.hostname());
+  });
+  ipcMain.handle("memory:claim-desktop-join", async (_event, joinLink) => {
+    const claimed = await claimDesktopJoinLink(joinLink);
+    const settings = store.update({
+      androidMemoryPairing: claimed.pairingUri,
+      androidMemorySyncEnabled: true
+    });
+    scheduleAndroidMemorySync(150);
+    scheduleDesktopPresence(100);
+    const sync = sendMemorySyncStatus({
+      state: "success",
+      message: "已加入同一同步空间，手机无需重新配对"
+    });
+    return { settings, sync, connection: claimed.connection };
+  });
   ipcMain.handle("memory:clear-pairing", () => {
     const settings = store.update({ clearAndroidMemoryPairing: true });
     clearTimeout(androidMemorySyncTimer);
+    clearTimeout(desktopPresenceTimer);
     return { settings, sync: sendMemorySyncStatus() };
   });
   ipcMain.handle("codex:login", (_event, patch) =>
@@ -1564,6 +1708,10 @@ function registerIpc() {
 
 app.whenReady().then(() => {
   store = new SettingsStore(app.getPath("userData"));
+  if (["light", "dark"].includes(process.env.LINGUABRIDGE_SMOKE_THEME)) {
+    store.data.themeMode = process.env.LINGUABRIDGE_SMOKE_THEME;
+  }
+  applyThemeMode();
   memoryOutbox = new MemoryOutboxStore(app.getPath("userData"));
   repairStoredShortcuts();
   if (process.env.LINGUABRIDGE_SMOKE_MODIFIER_SHORTCUT) {
@@ -1579,7 +1727,23 @@ app.whenReady().then(() => {
   registerIpc();
   createMainWindow();
   createTray();
+  applyRuntimeIcon();
   scheduleAndroidMemorySync(1500);
+  scheduleDesktopPresence(1800);
+  nativeTheme.on("updated", () => {
+    applyRuntimeIcon();
+    const themePayload = {
+      mode: store.data.themeMode,
+      dark: nativeTheme.shouldUseDarkColors
+    };
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setBackgroundColor(nativeTheme.shouldUseDarkColors ? "#09080e" : "#f7f4fb");
+      mainWindow.webContents.send("theme:changed", themePayload);
+    }
+    if (popupWindow && !popupWindow.isDestroyed()) {
+      popupWindow.webContents.send("theme:changed", themePayload);
+    }
+  });
   setupAutoUpdater();
   if (process.env.LINGUABRIDGE_POPUP_SCREENSHOT_PATH) {
     const smokePopupText = String(
@@ -1659,6 +1823,7 @@ app.whenReady().then(() => {
 app.on("before-quit", async () => {
   isQuitting = true;
   clearTimeout(androidMemorySyncTimer);
+  clearTimeout(desktopPresenceTimer);
   globalShortcut.unregisterAll();
   stopMacService();
   await stopMambo(store?.data || {});

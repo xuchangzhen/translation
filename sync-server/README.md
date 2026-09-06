@@ -8,6 +8,8 @@
 
 如果目标服务器的 80/443 已由 Nginx 承载其他业务，改用 `scripts/deploy-sync-server-nginx.sh`。它不会启动 Caddy 或升级 Docker，而是把同步 API 仅绑定到 `127.0.0.1:18787`，并为同步域名单独增加 Nginx 站点。现有站点文件不会被覆盖，数据库也不会暴露公网端口。
 
+共享 Nginx 模式已经部署后，后续版本使用 `scripts/upgrade-sync-server-nginx.sh`。脚本读取本机部署回执和远程既有密钥，只替换 LinguaBridge 中继容器；新容器健康检查失败会自动回滚，不会改写或重载 Nginx，也不会触碰同机其他业务。
+
 脚本需要 SSH 地址和已解析到服务器的独立子域名；共享 Nginx 模式还需要显式提供服务器公网 IPv4，以便部署前核对 DNS：
 
 - 可通过 SSH 登录的服务器地址，例如 `ubuntu@203.0.113.10`。

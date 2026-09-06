@@ -1,10 +1,14 @@
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { safeStorage } = require("electron");
 
 const DEFAULT_SETTINGS = Object.freeze({
-  settingsSchemaVersion: 5,
+  settingsSchemaVersion: 6,
+  themeMode: "system",
+  syncClientId: "",
+  syncClientName: os.hostname(),
   provider: "ollama",
   sourceLanguage: "auto",
   targetLanguage: "zh-CN",
@@ -42,6 +46,23 @@ class SettingsStore {
     this.filePath = path.join(userDataPath, "settings.json");
     this.backupFilePath = path.join(userDataPath, "settings.backup.json");
     this.data = this.read();
+    let changed = false;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(this.data.syncClientId || "")) {
+      this.data.syncClientId = crypto.randomUUID();
+      changed = true;
+    }
+    const clientName = String(this.data.syncClientName || os.hostname() || "这台电脑")
+      .trim()
+      .slice(0, 80);
+    if (clientName !== this.data.syncClientName) {
+      this.data.syncClientName = clientName;
+      changed = true;
+    }
+    if (!['system', 'light', 'dark'].includes(this.data.themeMode)) {
+      this.data.themeMode = "system";
+      changed = true;
+    }
+    if (changed) this.save();
   }
 
   normalize(parsed) {
@@ -123,6 +144,8 @@ class SettingsStore {
   update(patch) {
     const allowed = [
       "provider",
+      "themeMode",
+      "syncClientName",
       "sourceLanguage",
       "targetLanguage",
       "selectionShortcut",
@@ -153,6 +176,13 @@ class SettingsStore {
         this.data[key] = patch[key];
       }
     }
+
+    if (!["system", "light", "dark"].includes(this.data.themeMode)) {
+      this.data.themeMode = "system";
+    }
+    this.data.syncClientName = String(
+      this.data.syncClientName || os.hostname() || "这台电脑"
+    ).trim().slice(0, 80) || "这台电脑";
 
     if (typeof patch.apiKey === "string" && patch.apiKey.trim()) {
       if (!safeStorage.isEncryptionAvailable()) {

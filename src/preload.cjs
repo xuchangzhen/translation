@@ -3,11 +3,13 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("lingua", {
   getSettings: () => ipcRenderer.invoke("settings:get"),
   saveSettings: (settings) => ipcRenderer.invoke("settings:save", settings),
+  setThemeMode: (mode) => ipcRenderer.invoke("theme:set", mode),
   setShortcutRecording: (active) =>
     ipcRenderer.invoke("shortcut:recording", active),
   clearApiKey: () => ipcRenderer.invoke("settings:clear-api-key"),
   copyText: (text) => ipcRenderer.invoke("clipboard:write", text),
   getMemorySyncStatus: () => ipcRenderer.invoke("memory:sync-status"),
+  getDesktopClients: () => ipcRenderer.invoke("memory:desktop-clients"),
   captureMemory: (text, result) =>
     ipcRenderer.invoke("memory:capture", { text, result }),
   testAndroidMemory: (pairingValue = "") =>
@@ -16,6 +18,10 @@ contextBridge.exposeInMainWorld("lingua", {
     ipcRenderer.invoke("memory:provision-android", { serverUrl, registrationKey }),
   getAndroidMemoryPairing: () =>
     ipcRenderer.invoke("memory:get-phone-pairing"),
+  createDesktopJoinLink: () =>
+    ipcRenderer.invoke("memory:create-desktop-join"),
+  claimDesktopJoinLink: (joinLink) =>
+    ipcRenderer.invoke("memory:claim-desktop-join", joinLink),
   clearAndroidMemoryPairing: () =>
     ipcRenderer.invoke("memory:clear-pairing"),
   codexLogin: (settings = {}) => ipcRenderer.invoke("codex:login", settings),
@@ -74,6 +80,16 @@ contextBridge.exposeInMainWorld("lingua", {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("memory-sync:changed", listener);
     return () => ipcRenderer.removeListener("memory-sync:changed", listener);
+  },
+  onDesktopClientsChanged: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("desktop-clients:changed", listener);
+    return () => ipcRenderer.removeListener("desktop-clients:changed", listener);
+  },
+  onThemeChanged: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("theme:changed", listener);
+    return () => ipcRenderer.removeListener("theme:changed", listener);
   },
   onPopupStart: (callback) => {
     const listener = (_event, payload) => callback(payload);
