@@ -291,7 +291,7 @@ public final class AppUpdateManager {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
         Notification notification = new Notification.Builder(context, ReviewNotifications.UPDATE_CHANNEL)
-                .setSmallIcon(com.linguabridge.memory.R.drawable.ic_notification_sync)
+                .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
                 .setContentTitle("单词记忆 " + versionName + " 已准备好")
                 .setContentText("APK 已通过哈希、包名和签名验证，点击安装")
                 .setContentIntent(contentIntent)

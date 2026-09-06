@@ -9,12 +9,42 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 public final class CloudApi {
     private static final int MAX_RESPONSE_BYTES = 1024 * 1024;
 
     private CloudApi() {}
+
+    public static final class DesktopClient {
+        public final String name;
+        public final String platform;
+        public final String appVersion;
+        public final long lastSeenAt;
+        public final boolean online;
+
+        DesktopClient(String name, String platform, String appVersion, long lastSeenAt, boolean online) {
+            this.name = name;
+            this.platform = platform;
+            this.appVersion = appVersion;
+            this.lastSeenAt = lastSeenAt;
+            this.online = online;
+        }
+    }
+
+    public static final class DesktopPresence {
+        public final long serverTime;
+        public final List<DesktopClient> clients;
+        public final int online;
+
+        DesktopPresence(long serverTime, List<DesktopClient> clients, int online) {
+            this.serverTime = serverTime;
+            this.clients = clients;
+            this.online = online;
+        }
+    }
 
     public static SyncConfig register(String rawServerUrl, String registrationKey) throws Exception {
         String serverUrl = normalizeServerUrl(rawServerUrl);
@@ -81,7 +111,7 @@ public final class CloudApi {
         if (!response.optBoolean("acknowledged")) throw new IllegalStateException("服务器未确认批次");
     }
 
-    public static String desktopSummary(SyncConfig config) throws Exception {
+    public static DesktopPresence desktopPresence(SyncConfig config) throws Exception {
         JSONObject response = request(
                 config.serverUrl + "/v1/devices/" + config.deviceId + "/clients",
                 "GET",
@@ -95,20 +125,24 @@ public final class CloudApi {
         }
         long serverTime = response.optLong("serverTime", System.currentTimeMillis());
         JSONArray clients = response.optJSONArray("clients");
-        if (clients == null || clients.length() == 0) return "尚未发现在线电脑";
+        List<DesktopClient> result = new ArrayList<>();
+        if (clients == null) return new DesktopPresence(serverTime, result, 0);
         int online = 0;
-        StringBuilder names = new StringBuilder();
         for (int index = 0; index < clients.length(); index++) {
             JSONObject client = clients.optJSONObject(index);
             if (client == null) continue;
-            boolean active = Math.abs(serverTime - client.optLong("lastSeenAt", 0)) < 5 * 60_000;
+            long lastSeenAt = client.optLong("lastSeenAt", 0);
+            boolean active = Math.abs(serverTime - lastSeenAt) < 5 * 60_000;
             if (active) online++;
-            if (index < 3) {
-                if (names.length() > 0) names.append(" · ");
-                names.append(client.optString("name", "电脑"));
-            }
+            result.add(new DesktopClient(
+                    client.optString("name", "电脑"),
+                    client.optString("platform", ""),
+                    client.optString("appVersion", ""),
+                    lastSeenAt,
+                    active
+            ));
         }
-        return clients.length() + " 台电脑 · " + online + " 台在线\n" + names;
+        return new DesktopPresence(serverTime, result, online);
     }
 
     private static String normalizeServerUrl(String raw) throws Exception {

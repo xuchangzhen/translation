@@ -2866,13 +2866,41 @@ html.popup-page[data-theme="dark"] .popup-spinner {
   transition: none !important;
 }
 
-.theme-toggle .theme-moon,
-.theme-toggle[data-dark="false"] .theme-sun {
-  display: none;
+.theme-toggle {
+  position: relative;
+  overflow: hidden;
 }
 
+.theme-toggle .theme-sun,
+.theme-toggle .theme-moon {
+  position: absolute;
+  transition: opacity 260ms ease, transform 420ms cubic-bezier(.16,.82,.2,1);
+}
+
+.theme-toggle .theme-moon,
+.theme-toggle[data-dark="false"] .theme-sun {
+  opacity: 0;
+  transform: rotate(-80deg) scale(0.55);
+}
+
+.theme-toggle .theme-sun,
 .theme-toggle[data-dark="false"] .theme-moon {
-  display: block;
+  opacity: 1;
+  transform: rotate(0deg) scale(1);
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+html[data-theme-transition="active"]::view-transition-old(root) {
+  z-index: 1;
+}
+
+html[data-theme-transition="active"]::view-transition-new(root) {
+  z-index: 2;
 }
 
 .settings-header-actions {

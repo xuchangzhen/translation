@@ -9,8 +9,8 @@
 
     <application
         android:allowBackup="true"
-        android:icon="@drawable/linguabridge_memory_icon"
-        android:roundIcon="@drawable/linguabridge_memory_icon"
+        android:icon="@drawable/linguabridge_memory_app_icon"
+        android:roundIcon="@drawable/linguabridge_memory_app_icon"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.LinguaBridgeMemory"

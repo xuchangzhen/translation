@@ -4,7 +4,10 @@ import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.animation.AnimatorSet;
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
 import android.animation.ObjectAnimator;
+import android.animation.ValueAnimator;
 import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -26,6 +29,7 @@ import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.view.animation.DecelerateInterpolator;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -59,10 +63,13 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
     private MemoryDb db;
     private SecureStore secureStore;
     private FrameLayout content;
+    private FrameLayout rootHost;
     private LinearLayout navigation;
+    private View rootLayout;
     private TextToSpeech textToSpeech;
     private String currentPage = "home";
     private String syncMessage = "等待自动接收";
+    private boolean themeTransitioning;
 
     private final BroadcastReceiver syncReceiver = new BroadcastReceiver() {
         @Override
@@ -82,6 +89,8 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         textToSpeech = new TextToSpeech(this, this);
         ReviewNotifications.createChannels(this);
         requestNotificationPermission();
+        rootHost = new FrameLayout(this);
+        setContentView(rootHost);
         buildShell();
         registerSyncReceiver();
         AppUpdateManager.checkAsync(this, false);
@@ -162,7 +171,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         SURFACE = darkMode ? Color.rgb(9, 8, 14) : Color.rgb(247, 244, 250);
         CARD = darkMode ? Color.rgb(25, 21, 35) : Color.rgb(255, 255, 255);
         CARD_RAISED = darkMode ? Color.rgb(34, 28, 46) : Color.rgb(246, 241, 249);
-        LINE = darkMode ? Color.rgb(55, 47, 69) : Color.rgb(224, 215, 231);
+        LINE = darkMode ? Color.rgb(48, 41, 61) : Color.rgb(235, 228, 239);
         getWindow().setStatusBarColor(SURFACE);
         getWindow().setNavigationBarColor(darkMode ? Color.rgb(13, 11, 19) : Color.rgb(244, 239, 248));
         int flags = darkMode ? 0 : View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
@@ -171,6 +180,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
 
     private void buildShell() {
         LinearLayout root = new LinearLayout(this);
+        rootLayout = root;
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackground(gradient(new int[]{darkMode ? Color.rgb(19, 13, 29) : Color.rgb(253, 250, 255), SURFACE}, 0));
         root.setOnApplyWindowInsetsListener((view, insets) -> {
@@ -186,35 +196,33 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         header.setPadding(dp(20), dp(18), dp(20), dp(12));
         ImageView mark = new ImageView(this);
         mark.setImageResource(darkMode
-                ? com.linguabridge.memory.R.drawable.linguabridge_memory_icon_dark
-                : com.linguabridge.memory.R.drawable.linguabridge_memory_icon_light);
-        mark.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        mark.setBackground(rounded(darkMode ? Color.rgb(11, 10, 16) : Color.WHITE, 14));
-        mark.setClipToOutline(true);
-        mark.setElevation(dp(8));
-        header.addView(mark, new LinearLayout.LayoutParams(dp(48), dp(48)));
+                ? com.linguabridge.memory.R.drawable.linguabridge_memory_header_dark
+                : com.linguabridge.memory.R.drawable.linguabridge_memory_header_light);
+        mark.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        mark.setAdjustViewBounds(true);
+        mark.setContentDescription("加密记忆同步");
+        header.addView(mark, new LinearLayout.LayoutParams(dp(54), dp(54)));
         LinearLayout titles = vertical(2);
         titles.setPadding(dp(12), 0, 0, 0);
         titles.addView(label("单词记忆", 20, INK, Typeface.BOLD));
         titles.addView(label("离线复习 · 加密自动接收", 11, MUTED, Typeface.NORMAL));
         header.addView(titles, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        Button theme = linkButton(darkMode ? "☀" : "☾");
-        theme.setTextSize(19);
+        Button theme = linkButton("");
+        theme.setCompoundDrawablesRelativeWithIntrinsicBounds(
+                0,
+                darkMode ? com.linguabridge.memory.R.drawable.ic_theme_sun
+                        : com.linguabridge.memory.R.drawable.ic_theme_moon,
+                0,
+                0
+        );
+        theme.setCompoundDrawableTintList(ColorStateList.valueOf(BLUE));
+        theme.setStateListAnimator(null);
+        theme.setElevation(0);
         theme.setContentDescription(darkMode ? "切换到浅色模式" : "切换到深色模式");
-        theme.setOnClickListener(view -> {
-            getSharedPreferences("appearance", MODE_PRIVATE)
-                    .edit()
-                    .putString("theme", darkMode ? "light" : "dark")
-                    .apply();
-            recreate();
-        });
+        theme.setOnClickListener(view -> transitionTheme(view, darkMode ? "light" : "dark"));
         theme.setOnLongClickListener(view -> {
-            getSharedPreferences("appearance", MODE_PRIVATE)
-                    .edit()
-                    .putString("theme", "system")
-                    .apply();
             Toast.makeText(this, "已改为跟随系统外观", Toast.LENGTH_SHORT).show();
-            recreate();
+            transitionTheme(view, "system");
             return true;
         });
         header.addView(theme, new LinearLayout.LayoutParams(dp(48), dp(48)));
@@ -234,22 +242,89 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                 darkMode ? Color.rgb(19, 16, 27) : Color.rgb(250, 247, 252),
                 darkMode ? Color.rgb(13, 11, 19) : Color.rgb(244, 239, 248)
         }, 0));
-        addNav("今天", "home", this::showHome);
-        addNav("词库", "library", this::showLibrary);
-        addNav("连接桌面", "connect", this::showConnect);
+        addNav("今天", "home", com.linguabridge.memory.R.drawable.ic_nav_today, this::showHome);
+        addNav("词库", "library", com.linguabridge.memory.R.drawable.ic_nav_library, this::showLibrary);
+        addNav("连接桌面", "connect", com.linguabridge.memory.R.drawable.ic_nav_connect, this::showConnect);
         root.addView(navigation);
-        setContentView(root);
+        rootHost.addView(root, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        ));
     }
 
-    private void addNav(String title, String page, Runnable action) {
+    private void transitionTheme(View origin, String preference) {
+        if (themeTransitioning) return;
+        boolean systemDark = (getResources().getConfiguration().uiMode
+                & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+        boolean targetDark = "dark".equals(preference) || ("system".equals(preference) && systemDark);
+        getSharedPreferences("appearance", MODE_PRIVATE)
+                .edit()
+                .putString("theme", preference)
+                .apply();
+        if (targetDark == darkMode) {
+            return;
+        }
+        themeTransitioning = true;
+        String page = currentPage;
+        View previousRoot = rootLayout;
+        origin.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+        origin.animate().rotationBy(180f).scaleX(0.82f).scaleY(0.82f).setDuration(360).start();
+        applyPalette();
+        buildShell();
+        View nextRoot = rootLayout;
+        renderCurrentPage(page);
+        if (!ValueAnimator.areAnimatorsEnabled()) {
+            rootHost.removeView(previousRoot);
+            themeTransitioning = false;
+            return;
+        }
+        nextRoot.setAlpha(0f);
+        nextRoot.setScaleX(1.008f);
+        nextRoot.setScaleY(1.008f);
+        AnimatorSet blend = new AnimatorSet();
+        blend.playTogether(
+                ObjectAnimator.ofFloat(previousRoot, View.ALPHA, 1f, 0.48f, 0f),
+                ObjectAnimator.ofFloat(previousRoot, View.SCALE_X, 1f, 0.996f),
+                ObjectAnimator.ofFloat(previousRoot, View.SCALE_Y, 1f, 0.996f),
+                ObjectAnimator.ofFloat(nextRoot, View.ALPHA, 0f, 0.52f, 1f),
+                ObjectAnimator.ofFloat(nextRoot, View.SCALE_X, 1.008f, 1f),
+                ObjectAnimator.ofFloat(nextRoot, View.SCALE_Y, 1.008f, 1f)
+        );
+        blend.setDuration(560);
+        blend.setInterpolator(new DecelerateInterpolator());
+        blend.addListener(new AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(Animator animation) {
+                rootHost.removeView(previousRoot);
+                themeTransitioning = false;
+            }
+        });
+        blend.start();
+    }
+
+    private void renderCurrentPage(String page) {
+        if ("library".equals(page)) showLibrary();
+        else if ("connect".equals(page)) showConnect();
+        else if ("review".equals(page)) showReview();
+        else showHome();
+    }
+
+    private void addNav(String title, String page, int iconResource, Runnable action) {
         Button button = new Button(this);
         button.setText(title);
-        button.setTextSize(12);
+        button.setTextSize(10);
         button.setAllCaps(false);
         button.setTag(page);
         button.setOnClickListener(view -> action.run());
         button.setBackgroundColor(Color.TRANSPARENT);
-        navigation.addView(button, new LinearLayout.LayoutParams(0, dp(48), 1));
+        button.setCompoundDrawablesRelativeWithIntrinsicBounds(0, iconResource, 0, 0);
+        button.setCompoundDrawablePadding(dp(2));
+        button.setStateListAnimator(null);
+        button.setElevation(0);
+        button.setMinWidth(0);
+        button.setMinHeight(0);
+        button.setPadding(dp(8), 0, dp(8), 0);
+        navigation.addView(button, new LinearLayout.LayoutParams(0, dp(56), 1));
     }
 
     private void selectPage(String page) {
@@ -258,13 +333,14 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
             Button button = (Button) navigation.getChildAt(index);
             boolean selected = page.equals(button.getTag());
             button.setTextColor(selected ? BLUE : MUTED);
+            button.setCompoundDrawableTintList(ColorStateList.valueOf(selected ? BLUE : MUTED));
             button.setTypeface(Typeface.DEFAULT, selected ? Typeface.BOLD : Typeface.NORMAL);
-            button.setBackground(selected
-                    ? gradient(new int[]{
-                            darkMode ? Color.rgb(48, 34, 68) : Color.rgb(239, 226, 250),
-                            darkMode ? Color.rgb(34, 26, 49) : Color.rgb(248, 242, 252)
-                    }, 14)
-                    : rounded(Color.TRANSPARENT, 14));
+            button.animate()
+                    .scaleX(selected ? 1f : 0.97f)
+                    .scaleY(selected ? 1f : 0.97f)
+                    .setDuration(180)
+                    .start();
+            button.setBackground(rounded(Color.TRANSPARENT, 14));
         }
     }
 
@@ -315,31 +391,38 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         start.setOnClickListener(view -> showReview());
         body.addView(start, fullHeight(52));
 
+        SyncConfig syncConfig = secureStore.load();
         LinearLayout sync = card();
-        sync.addView(label("自动接收", 12, INK, Typeface.BOLD));
-        sync.addView(label(
-                secureStore.load() == null ? "尚未连接桌面端" : syncMessage,
-                11,
-                secureStore.load() == null ? MUTED : MINT,
-                Typeface.NORMAL
+        sync.addView(statusHeader(
+                "自动接收",
+                syncConfig == null ? "未连接" : "已加密连接",
+                syncConfig == null ? MUTED : MINT
         ));
+        TextView syncState = label(
+                syncConfig == null ? "连接桌面后，翻译内容会自动来到这里" : syncMessage,
+                11,
+                syncConfig == null ? MUTED : BLUE,
+                Typeface.NORMAL
+        );
+        syncState.setPadding(0, dp(9), 0, 0);
+        sync.addView(syncState);
         TextView detail = label(
-                "端到端加密 · 服务器不可读取词条 · 手机离线时自动补收",
+                "端到端加密  ·  离线自动补收  ·  服务器不可读取词条",
                 10,
                 MUTED,
                 Typeface.NORMAL
         );
         detail.setPadding(0, dp(8), 0, 0);
         sync.addView(detail);
-        TextView peers = label(
-                secureStore.load() == null ? "连接后会显示 Mac 与 Windows 在线状态" : "正在读取多端状态…",
-                10,
-                MUTED,
-                Typeface.NORMAL
-        );
-        peers.setPadding(0, dp(9), 0, 0);
+        LinearLayout peers = vertical(0);
+        peers.setPadding(0, dp(12), 0, 0);
         sync.addView(peers);
-        if (secureStore.load() != null) loadDesktopSummary(peers, secureStore.load());
+        if (syncConfig == null) {
+            peers.addView(emptyPresence("连接后，这里会显示 Mac 与 Windows 的实时状态"));
+        } else {
+            peers.addView(emptyPresence("正在读取设备状态…"));
+            loadDesktopPresence(peers, syncConfig);
+        }
         LinearLayout.LayoutParams syncParams = fullWrap();
         syncParams.topMargin = dp(16);
         body.addView(sync, syncParams);
@@ -401,6 +484,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
 
     private void showReview() {
         selectPage("home");
+        currentPage = "review";
         MemoryCard memoryCard = db.nextDue(System.currentTimeMillis());
         if (memoryCard == null) {
             LinearLayout body = pageBody();
@@ -574,7 +658,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
             body.addView(form, formParams);
         } else {
             LinearLayout connected = card();
-            connected.addView(label("●  自动接收已开启", 14, MINT, Typeface.BOLD));
+            connected.addView(statusHeader("自动接收", "已开启", MINT));
             TextView server = label(config.serverUrl, 12, INK, Typeface.BOLD);
             server.setPadding(0, dp(14), 0, 0);
             connected.addView(server);
@@ -582,10 +666,11 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
             TextView state = label(syncMessage, 11, BLUE, Typeface.NORMAL);
             state.setPadding(0, dp(10), 0, 0);
             connected.addView(state);
-            TextView peers = label("正在读取 Mac 与 Windows 在线状态…", 11, MUTED, Typeface.NORMAL);
-            peers.setPadding(0, dp(9), 0, 0);
+            LinearLayout peers = vertical(0);
+            peers.setPadding(0, dp(12), 0, 0);
+            peers.addView(emptyPresence("正在读取设备状态…"));
             connected.addView(peers);
-            loadDesktopSummary(peers, config);
+            loadDesktopPresence(peers, config);
 
             Button copy = primaryButton("复制桌面端配对信息");
             copy.setOnClickListener(view -> {
@@ -650,25 +735,74 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         }
     }
 
-    private void loadDesktopSummary(TextView target, SyncConfig config) {
+    private void loadDesktopPresence(LinearLayout target, SyncConfig config) {
         io.execute(() -> {
             try {
-                String summary = CloudApi.desktopSummary(config);
+                CloudApi.DesktopPresence presence = CloudApi.desktopPresence(config);
                 runOnUiThread(() -> {
                     if (target.isAttachedToWindow()) {
-                        target.setText(summary);
-                        target.setTextColor(MINT);
+                        renderDesktopPresence(target, presence);
                     }
                 });
             } catch (Exception error) {
                 runOnUiThread(() -> {
                     if (target.isAttachedToWindow()) {
-                        target.setText("多端状态暂时不可用，稍后自动重试");
-                        target.setTextColor(MUTED);
+                        target.removeAllViews();
+                        target.addView(emptyPresence("暂时无法读取设备状态，稍后会自动重试"));
                     }
                 });
             }
         });
+    }
+
+    private void renderDesktopPresence(LinearLayout target, CloudApi.DesktopPresence presence) {
+        target.removeAllViews();
+        if (presence.clients.isEmpty()) {
+            target.addView(emptyPresence("还没有电脑上报状态；打开桌面翻译器后会自动出现"));
+            return;
+        }
+        LinearLayout summary = new LinearLayout(this);
+        summary.setGravity(Gravity.CENTER_VERTICAL);
+        summary.addView(label(presence.clients.size() + " 台电脑", 10, MUTED, Typeface.BOLD), weighted());
+        summary.addView(statusPill(presence.online + " 台在线", presence.online > 0 ? MINT : MUTED));
+        target.addView(summary);
+        for (CloudApi.DesktopClient client : presence.clients) {
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(12), dp(10), dp(12), dp(10));
+            row.setBackground(rounded(CARD_RAISED, 14, LINE));
+            View dot = new View(this);
+            dot.setBackground(rounded(client.online ? MINT : MUTED, 4));
+            row.addView(dot, new LinearLayout.LayoutParams(dp(7), dp(7)));
+            LinearLayout copy = vertical(0);
+            copy.setPadding(dp(10), 0, dp(8), 0);
+            copy.addView(label(client.name, 11, INK, Typeface.BOLD));
+            String metadata = platformLabel(client.platform)
+                    + (client.appVersion.isEmpty() ? "" : "  ·  v" + client.appVersion);
+            copy.addView(label(metadata, 9, MUTED, Typeface.NORMAL));
+            row.addView(copy, weighted());
+            row.addView(label(relativePresence(client, presence.serverTime), 9,
+                    client.online ? MINT : MUTED, Typeface.BOLD));
+            LinearLayout.LayoutParams params = fullWrap();
+            params.topMargin = dp(8);
+            target.addView(row, params);
+        }
+    }
+
+    private String platformLabel(String platform) {
+        if ("darwin".equals(platform)) return "Mac";
+        if ("win32".equals(platform)) return "Windows";
+        if ("linux".equals(platform)) return "Linux";
+        return "电脑";
+    }
+
+    private String relativePresence(CloudApi.DesktopClient client, long serverTime) {
+        if (client.online) return "在线";
+        long minutes = Math.max(1, (serverTime - client.lastSeenAt) / 60_000);
+        if (minutes < 60) return minutes + " 分钟前";
+        long hours = minutes / 60;
+        if (hours < 24) return hours + " 小时前";
+        return Math.min(99, hours / 24) + " 天前";
     }
 
     private void copyPairing(SyncConfig config) {
@@ -692,6 +826,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
         ));
+        if (themeTransitioning) return;
         body.setAlpha(0f);
         body.setTranslationY(dp(12));
         AnimatorSet entrance = new AnimatorSet();
@@ -713,21 +848,62 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         LinearLayout card = vertical(3);
         card.setPadding(dp(18), dp(17), dp(18), dp(17));
         card.setBackground(gradient(new int[]{
-                darkMode ? Color.rgb(29, 24, 40) : Color.rgb(255, 255, 255),
+                darkMode ? Color.rgb(27, 23, 37) : Color.rgb(255, 254, 255),
                 CARD
         }, 20, LINE));
-        card.setElevation(dp(2));
+        card.setElevation(0);
         return card;
     }
 
     private View statCard(String title, int value, String hint) {
-        LinearLayout card = card();
-        card.addView(label(title, 10, MUTED, Typeface.BOLD));
+        LinearLayout card = vertical(0);
+        card.setPadding(dp(16), dp(14), dp(16), dp(14));
+        card.setBackground(rounded(darkMode ? Color.rgb(25, 21, 34) : Color.rgb(255, 254, 255), 18, LINE));
+        LinearLayout heading = new LinearLayout(this);
+        heading.setGravity(Gravity.CENTER_VERTICAL);
+        heading.addView(label(title, 10, MUTED, Typeface.BOLD), weighted());
+        View accent = new View(this);
+        accent.setBackground(rounded("待复习".equals(title) ? CORAL : BLUE, 3));
+        heading.addView(accent, new LinearLayout.LayoutParams(dp(6), dp(6)));
+        card.addView(heading);
         TextView number = label(String.valueOf(value), 28, INK, Typeface.BOLD);
-        number.setPadding(0, dp(3), 0, 0);
+        number.setPadding(0, dp(2), 0, 0);
         card.addView(number);
         card.addView(label(hint, 9, MUTED, Typeface.NORMAL));
         return card;
+    }
+
+    private LinearLayout statusHeader(String title, String status, int color) {
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        View dot = new View(this);
+        dot.setBackground(rounded(color, 4));
+        header.addView(dot, new LinearLayout.LayoutParams(dp(8), dp(8)));
+        TextView heading = label(title, 12, INK, Typeface.BOLD);
+        heading.setPadding(dp(9), 0, 0, 0);
+        header.addView(heading, weighted());
+        header.addView(statusPill(status, color));
+        return header;
+    }
+
+    private TextView statusPill(String text, int color) {
+        TextView pill = label(text, 9, color, Typeface.BOLD);
+        pill.setGravity(Gravity.CENTER);
+        pill.setPadding(dp(10), dp(5), dp(10), dp(5));
+        pill.setBackground(rounded(withAlpha(color, darkMode ? 36 : 22), 10,
+                withAlpha(color, darkMode ? 86 : 54)));
+        return pill;
+    }
+
+    private TextView emptyPresence(String text) {
+        TextView empty = label(text, 10, MUTED, Typeface.NORMAL);
+        empty.setPadding(dp(12), dp(10), dp(12), dp(10));
+        empty.setBackground(rounded(CARD_RAISED, 13));
+        return empty;
+    }
+
+    private int withAlpha(int color, int alpha) {
+        return Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color));
     }
 
     private TextView eyebrow(String text) {

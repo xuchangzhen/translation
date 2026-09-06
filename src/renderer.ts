@@ -836,11 +836,54 @@ function bindGlobalCommands() {
 }
 
 async function setThemeMode(mode: AppSettings["themeMode"]) {
-  settings = await window.lingua.setThemeMode(mode);
-  applyResolvedTheme(resolveDarkTheme(mode));
-  document.querySelectorAll<HTMLButtonElement>("[data-theme-mode]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.themeMode === mode);
-  });
+  const apply = async () => {
+    settings = await window.lingua.setThemeMode(mode);
+    applyResolvedTheme(resolveDarkTheme(mode));
+    document.querySelectorAll<HTMLButtonElement>("[data-theme-mode]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.themeMode === mode);
+    });
+  };
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const transitionDocument = document as Document & {
+    startViewTransition?: (callback: () => Promise<void>) => {
+      ready: Promise<void>;
+      finished: Promise<void>;
+    };
+  };
+  if (reducedMotion || !transitionDocument.startViewTransition) {
+    await apply();
+    return;
+  }
+  document.documentElement.dataset.themeTransition = "active";
+  const transition = transitionDocument.startViewTransition.call(document, apply);
+  transition.ready.then(() => {
+    document.documentElement.animate(
+      {
+        opacity: [0, 0.68, 1],
+        filter: ["blur(10px)", "blur(3px)", "blur(0px)"],
+        transform: ["scale(1.012)", "scale(1.004)", "scale(1)"]
+      },
+      {
+        duration: 520,
+        easing: "cubic-bezier(.16,.82,.2,1)",
+        pseudoElement: "::view-transition-new(root)"
+      }
+    );
+    document.documentElement.animate(
+      {
+        opacity: [1, 0.42, 0],
+        filter: ["blur(0px)", "blur(2px)", "blur(7px)"],
+        transform: ["scale(1)", "scale(.998)", "scale(.992)"]
+      },
+      {
+        duration: 420,
+        easing: "cubic-bezier(.4,0,.6,1)",
+        pseudoElement: "::view-transition-old(root)"
+      }
+    );
+  }).catch(() => {});
+  await transition.finished.catch(() => {});
+  delete document.documentElement.dataset.themeTransition;
 }
 
 function platformLabel(platform: string) {
