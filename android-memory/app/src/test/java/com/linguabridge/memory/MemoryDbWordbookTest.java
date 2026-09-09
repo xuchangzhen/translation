@@ -80,15 +80,18 @@ public class MemoryDbWordbookTest {
         MemoryCard card = db.nextDue(now, book);
         db.review(card.id, "good", now);
         assertNull(db.nextDue(now + 1, book));
+        assertEquals(1, db.practiceCount(now + 1, book));
         MemoryCard practice = db.nextPractice(now + 1, book);
         assertNotNull(practice);
         assertEquals(card.id, practice.id);
         db.review(practice.id, "good", now + 2);
         assertNull(db.nextPractice(now + 1, book));
+        assertEquals(0, db.practiceCount(now + 1, book));
     }
     @Test public void reviewNavigationLoadsUnseenCardsWithoutChangingTheirSchedules() {
         long book = db.importWordbook(WordbookImporter.parse("word,translation\nfirst,第一\nsecond,第二", "navigation.csv"), "导航").wordbookId;
         long now = System.currentTimeMillis();
+        assertEquals(2, db.dueCount(now, book));
         List<Long> shown = new ArrayList<>();
         MemoryCard first = db.nextDueExcluding(now, book, shown);
         shown.add(first.id);

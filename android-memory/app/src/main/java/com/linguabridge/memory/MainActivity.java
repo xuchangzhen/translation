@@ -17,7 +17,12 @@ import android.content.IntentFilter;
 import android.content.res.Configuration;
 import android.content.res.ColorStateList;
 import android.content.pm.PackageManager;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.LinearGradient;
+import android.graphics.Paint;
+import android.graphics.RectF;
+import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
@@ -90,6 +95,10 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
     private boolean reviewAdvancing;
     private boolean reviewCardSwitching;
     private boolean suppressNextPageAnimation;
+    private int reviewSessionTotal;
+    private int reviewProgressAnimationStart;
+    private boolean animateReviewProgress;
+    private ReviewSwipeStage reviewSwipeStage;
     /** Cards encountered in this session. Keeping this small, growing history makes swipe-back predictable. */
     private final List<MemoryCard> reviewCards = new ArrayList<>();
     private final Map<Long, String> reviewRatings = new HashMap<>();
@@ -768,9 +777,14 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         reviewWordbookId = wordbookId;
         reviewSessionStartedAt = System.currentTimeMillis();
         reviewPracticeMode = db.nextDue(reviewSessionStartedAt, wordbookId) == null;
+        reviewSessionTotal = reviewPracticeMode
+                ? db.practiceCount(reviewSessionStartedAt, wordbookId)
+                : db.dueCount(reviewSessionStartedAt, wordbookId);
         reviewCards.clear();
         reviewRatings.clear();
         reviewCardIndex = -1;
+        reviewProgressAnimationStart = 0;
+        animateReviewProgress = false;
         MemoryCard first = nextUnseenReviewCard();
         if (first != null) {
             reviewCards.add(first);
@@ -789,6 +803,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                 ? reviewCards.get(reviewCardIndex)
                 : null;
         if (memoryCard == null) {
+            reviewSwipeStage = null;
             LinearLayout body = pageBody();
             body.setGravity(Gravity.CENTER_HORIZONTAL);
             TextView check = label("✓", 36, Color.WHITE, Typeface.BOLD);
@@ -815,15 +830,12 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         LinearLayout toolbar = new LinearLayout(this);
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
         toolbar.addView(eyebrow(reviewPracticeMode ? "PRACTICE" : "ACTIVE RECALL"), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        Button finish = linkButton("结束本轮");
-        finish.setOnClickListener(view -> showHome());
-        toolbar.addView(finish);
         body.addView(toolbar);
 
-        LinearLayout sessionTrail = reviewSessionTrail();
-        LinearLayout.LayoutParams trailParams = fullHeight(46);
-        trailParams.topMargin = dp(12);
-        body.addView(sessionTrail, trailParams);
+        LinearLayout progress = reviewProgressSummary();
+        LinearLayout.LayoutParams progressParams = fullHeight(70);
+        progressParams.topMargin = dp(12);
+        body.addView(progress, progressParams);
 
         final String savedRating = reviewRatings.get(memoryCard.id);
         final boolean recordedThisSession = savedRating != null;
@@ -835,25 +847,21 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         TextView front = label(memoryCard.front, "word".equals(memoryCard.type) ? 30 : 23, INK, Typeface.BOLD);
         front.setGravity(Gravity.CENTER);
         front.setPadding(0, dp(15), 0, 0);
-        reviewCard.addView(front);
+        reviewCard.addView(front, fullWrap());
         if (!memoryCard.phonetic.isEmpty()) {
             TextView ipa = label(IpaFormatter.formatIpaForDisplay(memoryCard.phonetic), 18, LILAC, Typeface.NORMAL);
             ipa.setTypeface(Typeface.create("serif", Typeface.NORMAL));
+            ipa.setGravity(Gravity.CENTER);
             ipa.setPadding(0, dp(8), 0, 0);
-            reviewCard.addView(ipa);
+            reviewCard.addView(ipa, fullWrap());
         }
         Button speak = linkButton("朗读");
         speak.setOnClickListener(view -> speak(memoryCard));
         reviewCard.addView(speak);
 
-        LinearLayout swipeRail = reviewSwipeRail(recordedThisSession);
-        LinearLayout.LayoutParams railParams = fullHeight(54);
-        railParams.topMargin = dp(14);
-        reviewCard.addView(swipeRail, railParams);
-
         TextView swipeHint = label(recordedThisSession
-                ? "本轮已记录 · 左下 / 右下轻扫也可切换"
-                : "轻扫轨道或卡片空白处 · 左下 / 右下也可", 10, MUTED, Typeface.NORMAL);
+                ? "本轮已记录"
+                : "左滑轻松并进入下一张 · 右滑返回上一张", 10, MUTED, Typeface.NORMAL);
         swipeHint.setGravity(Gravity.CENTER);
         swipeHint.setPadding(0, dp(8), 0, 0);
         reviewCard.addView(swipeHint);
@@ -902,16 +910,17 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
             revealReviewAnswer(reveal, answer, ratings, swipeHint, -1);
         });
 
-        ReviewSwipeStage stage = new ReviewSwipeStage((swipedStage, direction) -> navigateReview(direction, swipedStage));
-        MemoryCard previousCard = reviewCardIndex > 0 ? reviewCards.get(reviewCardIndex - 1) : null;
+        ReviewSwipeStage stage = new ReviewSwipeStage();
         MemoryCard nextCard = reviewCardIndex + 1 < reviewCards.size()
                 ? reviewCards.get(reviewCardIndex + 1)
                 : nextUnseenReviewCard();
+        MemoryCard previousCard = reviewCardIndex > 0 ? reviewCards.get(reviewCardIndex - 1) : null;
         stage.setCards(
                 reviewCard,
-                nextCard == null ? null : reviewPreviewCard(nextCard, "下一张"),
-                previousCard == null ? null : reviewPreviewCard(previousCard, "上一张")
+                nextCard == null ? null : reviewPreviewCard(nextCard),
+                previousCard == null ? null : reviewPreviewCard(previousCard)
         );
+        reviewSwipeStage = stage;
         LinearLayout.LayoutParams cardParams = fullWrap();
         cardParams.topMargin = dp(12);
         body.addView(stage, cardParams);
@@ -919,65 +928,188 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         setPage(body);
     }
 
-    private LinearLayout reviewSessionTrail() {
-        LinearLayout trail = new LinearLayout(this);
-        trail.setGravity(Gravity.CENTER_VERTICAL);
-        trail.setPadding(dp(14), 0, dp(14), 0);
-        applyFlatSurfaceStyle(trail, CARD_RAISED, 16);
-        TextView sparkle = label("✦", 18, LILAC, Typeface.BOLD);
-        trail.addView(sparkle, new LinearLayout.LayoutParams(dp(28), ViewGroup.LayoutParams.WRAP_CONTENT));
-        LinearLayout text = vertical(0);
-        text.addView(label("记忆正在流动", 11, INK, Typeface.BOLD));
-        text.addView(label("第 " + (reviewCardIndex + 1) + " 张 · 轻扫探索下一张", 10, MUTED, Typeface.NORMAL));
-        trail.addView(text, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        LinearLayout dots = new LinearLayout(this);
-        dots.setGravity(Gravity.CENTER_VERTICAL);
-        int activeDot = Math.floorMod(reviewCardIndex, 5);
-        for (int index = 0; index < 5; index++) {
-            View dot = new View(this);
-            boolean active = index == activeDot;
-            dot.setBackground(rounded(active ? LILAC : LINE, active ? 6 : 4));
-            LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(active ? 10 : 6), dp(active ? 10 : 6));
-            dotParams.setMarginStart(dp(4));
-            dots.addView(dot, dotParams);
-            if (active) dot.post(() -> dot.animate().scaleX(1.18f).scaleY(1.18f).setDuration(520)
-                    .setInterpolator(new android.view.animation.OvershootInterpolator(1.1f))
-                    .withEndAction(() -> dot.animate().scaleX(1f).scaleY(1f).setDuration(340).start()).start());
+    private LinearLayout reviewProgressSummary() {
+        int learned = reviewProgressValue();
+        int waiting = Math.max(0, reviewSessionTotal - learned);
+        int progressStart = animateReviewProgress
+                ? Math.min(Math.max(0, reviewProgressAnimationStart), reviewSessionTotal)
+                : learned;
+        boolean shouldAnimateProgress = animateReviewProgress && progressStart != learned;
+        animateReviewProgress = false;
+        LinearLayout summary = vertical(0);
+        summary.setPadding(dp(2), dp(2), dp(2), 0);
+        LinearLayout heading = new LinearLayout(this);
+        heading.setGravity(Gravity.CENTER_VERTICAL);
+        heading.addView(label("本轮复习进度", 11, INK, Typeface.BOLD), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        heading.addView(label("已复习 " + learned + " / " + reviewSessionTotal, 11, LILAC, Typeface.BOLD));
+        summary.addView(heading);
+
+        ReviewProgressBar bar = new ReviewProgressBar();
+        bar.setProgress(progressStart, false);
+        LinearLayout.LayoutParams barParams = fullHeight(10);
+        barParams.topMargin = dp(7);
+        summary.addView(bar, barParams);
+        if (shouldAnimateProgress) bar.post(() -> bar.setProgress(learned, true));
+
+        LinearLayout caption = new LinearLayout(this);
+        caption.setPadding(0, dp(5), 0, 0);
+        caption.addView(label("已复习 " + learned, 10, BLUE, Typeface.NORMAL), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView pending = label("待复习 " + waiting, 10, MUTED, Typeface.NORMAL);
+        pending.setGravity(Gravity.RIGHT);
+        caption.addView(pending, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        summary.addView(caption);
+        return summary;
+    }
+
+    private int reviewProgressValue() {
+        return Math.min(Math.max(0, reviewCardIndex), reviewSessionTotal);
+    }
+
+    /** A compact progress meter with a moving crystal highlight whenever progress changes. */
+    private final class ReviewProgressBar extends View {
+        private final Paint trackPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint sparklePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF bounds = new RectF();
+        private float progress;
+        private float shimmerPosition = 0.72f;
+        private ValueAnimator animator;
+
+        ReviewProgressBar() {
+            super(MainActivity.this);
+            trackPaint.setColor(darkMode ? Color.rgb(67, 59, 80) : Color.rgb(230, 225, 239));
         }
-        trail.addView(dots);
-        return trail;
+
+        void setProgress(int value, boolean animate) {
+            float target = Math.max(0f, Math.min(1f,
+                    value / (float) Math.max(1, reviewSessionTotal)));
+            if (animator != null) animator.cancel();
+            if (!animate || getWidth() == 0) {
+                progress = target;
+                shimmerPosition = 0.72f;
+                invalidate();
+                return;
+            }
+            animator = ValueAnimator.ofFloat(progress, target);
+            animator.setDuration(520);
+            animator.setInterpolator(new android.view.animation.PathInterpolator(
+                    0.20f, 0.92f, 0.28f, 1f
+            ));
+            animator.addUpdateListener(animation -> {
+                progress = (float) animation.getAnimatedValue();
+                shimmerPosition = -0.20f + animation.getAnimatedFraction() * 1.45f;
+                invalidate();
+            });
+            animator.start();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            float width = getWidth();
+            float height = getHeight();
+            if (width <= 0f || height <= 0f) return;
+            float radius = height / 2f;
+            bounds.set(0f, 0f, width, height);
+            canvas.drawRoundRect(bounds, radius, radius, trackPaint);
+
+            float fillWidth = width * progress;
+            if (fillWidth <= 0f) return;
+            fillPaint.setShader(new LinearGradient(
+                    0f, 0f, width, 0f,
+                    new int[]{
+                            Color.rgb(94, 76, 244),
+                            Color.rgb(78, 184, 255),
+                            Color.rgb(187, 241, 255),
+                            Color.rgb(183, 106, 255)
+                    },
+                    new float[]{0f, 0.36f, 0.60f, 1f},
+                    Shader.TileMode.CLAMP
+            ));
+            int save = canvas.save();
+            canvas.clipRect(0f, 0f, fillWidth, height);
+            canvas.drawRoundRect(bounds, radius, radius, fillPaint);
+
+            float glintX = shimmerPosition * width;
+            sparklePaint.setShader(new LinearGradient(
+                    glintX - dp(22), 0f, glintX + dp(22), 0f,
+                    new int[]{Color.TRANSPARENT, Color.argb(205, 255, 255, 255), Color.TRANSPARENT},
+                    null,
+                    Shader.TileMode.CLAMP
+            ));
+            canvas.drawRect(glintX - dp(22), 0f, glintX + dp(22), height, sparklePaint);
+            sparklePaint.setShader(null);
+            sparklePaint.setColor(Color.argb(220, 255, 255, 255));
+            float starX = Math.min(Math.max(dp(5), glintX), fillWidth - dp(4));
+            if (starX > 0f) {
+                canvas.drawCircle(starX, height * 0.32f, dp(1), sparklePaint);
+                canvas.drawCircle(Math.max(dp(4), starX - dp(7)), height * 0.70f, dp(1) * 0.7f, sparklePaint);
+            }
+            canvas.restoreToCount(save);
+            fillPaint.setShader(null);
+        }
+
+        @Override
+        protected void onDetachedFromWindow() {
+            if (animator != null) animator.cancel();
+            super.onDetachedFromWindow();
+        }
     }
 
-    private LinearLayout reviewSwipeRail(boolean recordedThisSession) {
-        LinearLayout rail = new LinearLayout(this);
-        rail.setGravity(Gravity.CENTER_VERTICAL);
-        rail.setPadding(dp(16), 0, dp(16), 0);
-        applyFlatSurfaceStyle(rail, CARD_RAISED, 16);
-        rail.addView(label("← 下一张", 12, BLUE, Typeface.BOLD), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView grip = label("⇆ 轻扫切换", 12, INK, Typeface.BOLD);
-        grip.setGravity(Gravity.CENTER);
-        rail.addView(grip, new LinearLayout.LayoutParams(dp(106), ViewGroup.LayoutParams.WRAP_CONTENT));
-        TextView previous = label("上一张 →", 12, recordedThisSession ? LILAC : MUTED, Typeface.BOLD);
-        previous.setGravity(Gravity.RIGHT);
-        rail.addView(previous, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        return rail;
-    }
-
-    /** A lightweight card behind the active card makes the destination visible while dragging. */
-    private View reviewPreviewCard(MemoryCard memoryCard, String position) {
+    /** The destination card mirrors the resting card, avoiding a visual jump after a swipe. */
+    private View reviewPreviewCard(MemoryCard memoryCard) {
         LinearLayout preview = card();
         preview.setGravity(Gravity.CENTER_HORIZONTAL);
         preview.setPadding(dp(22), dp(28), dp(22), dp(24));
-        TextView positionLabel = label(position, 10, MUTED, Typeface.BOLD);
-        preview.addView(positionLabel);
         TextView kind = label("word".equals(memoryCard.type) ? "WORD" : "SENTENCE", 10, BLUE, Typeface.BOLD);
-        kind.setPadding(0, dp(12), 0, 0);
         preview.addView(kind);
-        TextView front = label(memoryCard.front, "word".equals(memoryCard.type) ? 28 : 21, INK, Typeface.BOLD);
+        TextView front = label(memoryCard.front, "word".equals(memoryCard.type) ? 30 : 23, INK, Typeface.BOLD);
         front.setGravity(Gravity.CENTER);
-        front.setPadding(0, dp(15), 0, dp(8));
-        preview.addView(front);
-        preview.addView(label("松手即可切换", 11, MUTED, Typeface.NORMAL));
+        front.setPadding(0, dp(15), 0, 0);
+        preview.addView(front, fullWrap());
+        if (!memoryCard.phonetic.isEmpty()) {
+            TextView ipa = label(IpaFormatter.formatIpaForDisplay(memoryCard.phonetic), 18, LILAC, Typeface.NORMAL);
+            ipa.setTypeface(Typeface.create("serif", Typeface.NORMAL));
+            ipa.setGravity(Gravity.CENTER);
+            ipa.setPadding(0, dp(8), 0, 0);
+            preview.addView(ipa, fullWrap());
+        }
+        preview.addView(linkButton("朗读"));
+        String savedRating = reviewRatings.get(memoryCard.id);
+        TextView hint = label(savedRating == null
+                ? "左滑轻松并进入下一张 · 右滑返回上一张"
+                : "本轮已记录 · 左滑轻松下一张 · 右滑上一张", 10, MUTED, Typeface.NORMAL);
+        hint.setGravity(Gravity.CENTER);
+        hint.setPadding(0, dp(8), 0, 0);
+        preview.addView(hint);
+        if (savedRating == null) {
+            Button reveal = primaryButton("显示答案");
+            LinearLayout.LayoutParams revealParams = fullHeight(50);
+            revealParams.topMargin = dp(20);
+            preview.addView(reveal, revealParams);
+        } else {
+            LinearLayout answer = vertical(10);
+            answer.setPadding(0, dp(22), 0, 0);
+            answer.addView(label("答案", 10, MUTED, Typeface.BOLD));
+            answer.addView(label(memoryCard.back, 20, INK, Typeface.BOLD));
+            if (!memoryCard.category.isEmpty()) answer.addView(label(memoryCard.category, 12, BLUE, Typeface.NORMAL));
+            if (!memoryCard.context.isEmpty()) {
+                answer.addView(sectionLabel("原句语境"));
+                answer.addView(label(memoryCard.context, 12, MUTED, Typeface.NORMAL));
+            }
+            if (!memoryCard.technicalNotes.isEmpty()) {
+                answer.addView(sectionLabel("技术关联"));
+                for (String note : memoryCard.technicalNotes) {
+                    answer.addView(label("• " + note, 12,
+                            darkMode ? Color.rgb(202, 190, 219) : Color.rgb(88, 75, 100), Typeface.NORMAL));
+                }
+            }
+            preview.addView(answer, fullWrap());
+            TextView recorded = label("已记录：" + ratingLabel(savedRating), 12, BLUE, Typeface.BOLD);
+            recorded.setGravity(Gravity.CENTER);
+            recorded.setPadding(0, dp(16), 0, 0);
+            preview.addView(recorded, fullWrap());
+        }
         return preview;
     }
 
@@ -986,7 +1118,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         reveal.setVisibility(View.GONE);
         answer.setVisibility(View.VISIBLE);
         ratings.setVisibility(View.VISIBLE);
-        swipeHint.setText("滑动轨道或卡片空白处切换 · 在下方记录回忆结果");
+        swipeHint.setText("左滑默认标记为轻松 · 右滑返回上一张 · 也可在下方选择更准确的结果");
         answer.setAlpha(0f);
         answer.setTranslationX(dp(-18 * direction));
         ratings.setAlpha(0f);
@@ -1018,36 +1150,31 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         long reviewedAt = reviewPracticeMode
                 ? Math.max(System.currentTimeMillis(), reviewSessionStartedAt + 1)
                 : System.currentTimeMillis();
+        reviewProgressAnimationStart = reviewProgressValue();
         db.review(memoryCard.id, rating, reviewedAt);
         reviewRatings.put(memoryCard.id, rating);
+        animateReviewProgress = true;
         ReviewNotifications.scheduleNext(this);
         reviewCard.setEnabled(false);
         moveToNextUnratedCard();
         reviewCardSwitching = true;
-        animateReviewCardExit(reviewCard, 1, this::showReview);
+        ReviewSwipeStage stage = reviewSwipeStage;
+        if (stage != null && stage.activeCard() == reviewCard) {
+            // Rating a card continues through the same leftward hand-off as a left swipe.
+            animateReviewCardTransition(stage, -1, this::showReview);
+        } else {
+            animateReviewCardExit(reviewCard, -1, this::showReview);
+        }
     }
 
-    private interface SwipeListener {
-        void onSwipe(ReviewSwipeStage stage, int direction);
-    }
-
-    /**
-     * Intercepts a small, deliberate horizontal drag while keeping regular taps
-     * (including answer/rating buttons) in the card's normal event path.
-     */
+    /** Holds the active card and its two destination previews during a swipe. */
     private final class ReviewSwipeStage extends FrameLayout {
-        private final SwipeListener listener;
-        private float downX, downY;
-        private boolean horizontalGesture;
-        private final int touchSlop;
         private View activeCard;
         private View leftCard;
         private View rightCard;
 
-        ReviewSwipeStage(SwipeListener listener) {
+        ReviewSwipeStage() {
             super(MainActivity.this);
-            this.listener = listener;
-            this.touchSlop = android.view.ViewConfiguration.get(MainActivity.this).getScaledTouchSlop();
             setClipChildren(false);
             setClipToPadding(false);
         }
@@ -1069,25 +1196,32 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
             }
             addView(activeCard, layout);
             activeCard.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+            activeCard.post(() -> setLowerPivot(activeCard));
         }
 
         View activeCard() {
             return activeCard;
         }
 
+        View destinationCard(int direction) {
+            return direction < 0 ? leftCard : rightCard;
+        }
+
         private void preparePreview(View card, int direction) {
             card.setAlpha(0f);
-            card.setScaleX(0.94f);
-            card.setScaleY(0.94f);
-            card.setTranslationX(dp(direction * 20));
+            card.setScaleX(1f);
+            card.setScaleY(1f);
+            card.setTranslationX(dp(direction * 28));
         }
 
         private void updateDrag(float dx) {
             if (activeCard == null) return;
             float width = Math.max(1f, getWidth());
             float progress = Math.min(1f, Math.abs(dx) / (width * 0.62f));
+            setLowerPivot(activeCard);
             activeCard.setTranslationX(dx);
-            activeCard.setRotation((dx / width) * 3.2f);
+            float tilt = Math.min(30f, Math.abs(dx) / width * 48f);
+            activeCard.setRotation(Math.signum(dx) * tilt);
             float activeScale = 1f - progress * 0.025f;
             activeCard.setScaleX(activeScale);
             activeCard.setScaleY(activeScale);
@@ -1095,13 +1229,17 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
             updatePreview(dx < 0f ? rightCard : leftCard, dx < 0f ? 1 : -1, 0f);
         }
 
+        private void setLowerPivot(View card) {
+            card.setPivotX(card.getWidth() * 0.5f);
+            card.setPivotY(card.getHeight() * 0.72f);
+        }
+
         private void updatePreview(View card, int direction, float progress) {
             if (card == null) return;
-            card.setAlpha(progress * 0.96f);
-            float scale = 0.94f + progress * 0.06f;
-            card.setScaleX(scale);
-            card.setScaleY(scale);
-            card.setTranslationX(dp(direction * 20) * (1f - progress));
+            card.setAlpha(Math.min(1f, 0.10f + progress * 0.90f));
+            card.setScaleX(1f);
+            card.setScaleY(1f);
+            card.setTranslationX(dp(direction * 28) * (1f - progress));
         }
 
         void resetVisuals() {
@@ -1116,8 +1254,21 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
 
         private void resetPreview(View card, int direction) {
             if (card == null) return;
-            card.animate().alpha(0f).scaleX(0.94f).scaleY(0.94f).translationX(dp(direction * 20))
+            card.animate().alpha(0f).scaleX(1f).scaleY(1f).translationX(dp(direction * 28))
                     .setDuration(150).setInterpolator(new DecelerateInterpolator()).start();
+        }
+
+    }
+
+    /** Captures a horizontal tendency anywhere on the review page, including its empty space. */
+    private final class ReviewScreenSwipeSurface extends FrameLayout {
+        private float downX;
+        private boolean horizontalGesture;
+        private final int touchSlop;
+
+        ReviewScreenSwipeSurface() {
+            super(MainActivity.this);
+            touchSlop = android.view.ViewConfiguration.get(MainActivity.this).getScaledTouchSlop();
         }
 
         @Override
@@ -1125,29 +1276,18 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
                     downX = event.getX();
-                    downY = event.getY();
                     horizontalGesture = false;
-                    // Reserve the first few pixels for this card: it lets a down-left or
-                    // down-right gesture become a swipe before the outer ScrollView grabs it.
-                    getParent().requestDisallowInterceptTouchEvent(true);
                     break;
                 case MotionEvent.ACTION_MOVE:
-                    float dx = event.getX() - downX;
-                    float dy = event.getY() - downY;
-                    float horizontalStart = Math.max(1f, Math.min(touchSlop, dp(3)));
-                    if (Math.abs(dx) >= horizontalStart) {
+                    // Deliberately ignore vertical displacement: any left/right tendency owns
+                    // the interaction, even when the hand naturally travels on a diagonal.
+                    if (Math.abs(event.getX() - downX) >= Math.max(1f, Math.min(touchSlop, dp(2)))) {
                         horizontalGesture = true;
                         return true;
-                    }
-                    // Only release to vertical scrolling for an almost perfectly vertical pull.
-                    // This keeps a natural down-left/down-right movement in the card gesture.
-                    if (Math.abs(dy) >= Math.max(dp(72), touchSlop * 5f) && Math.abs(dx) < dp(2)) {
-                        getParent().requestDisallowInterceptTouchEvent(false);
                     }
                     break;
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
-                    if (!horizontalGesture) getParent().requestDisallowInterceptTouchEvent(false);
                     return horizontalGesture;
             }
             return false;
@@ -1155,25 +1295,25 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
 
         @Override
         public boolean onTouchEvent(MotionEvent event) {
+            ReviewSwipeStage stage = reviewSwipeStage;
+            if (stage == null) return super.onTouchEvent(event);
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_MOVE:
                     if (horizontalGesture) {
-                        float dx = event.getX() - downX;
-                        updateDrag(dx);
+                        stage.updateDrag(event.getX() - downX);
                         return true;
                     }
                     break;
                 case MotionEvent.ACTION_UP:
                     if (horizontalGesture) {
                         float dx = event.getX() - downX;
-                        float triggerDistance = Math.max(dp(20), getWidth() * 0.06f);
                         horizontalGesture = false;
-                        getParent().requestDisallowInterceptTouchEvent(false);
+                        float triggerDistance = Math.max(dp(18), getWidth() * 0.05f);
                         if (Math.abs(dx) >= triggerDistance) {
                             performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
-                            listener.onSwipe(this, dx > 0 ? 1 : -1);
+                            navigateReview(dx > 0 ? 1 : -1, stage);
                         } else {
-                            resetVisuals();
+                            stage.resetVisuals();
                         }
                         return true;
                     }
@@ -1181,8 +1321,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                 case MotionEvent.ACTION_CANCEL:
                     if (horizontalGesture) {
                         horizontalGesture = false;
-                        getParent().requestDisallowInterceptTouchEvent(false);
-                        resetVisuals();
+                        stage.resetVisuals();
                         return true;
                     }
                     break;
@@ -1193,24 +1332,41 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
 
     private void navigateReview(int direction, ReviewSwipeStage stage) {
         if (reviewAdvancing) return;
-        // Physical left goes forward; physical right returns to the card just seen.
-        int targetIndex = reviewCardIndex - direction;
-        if (direction < 0 && targetIndex >= reviewCards.size()) {
-            MemoryCard next = nextUnseenReviewCard();
-            if (next != null) {
-                reviewCards.add(next);
-            } else {
+        // Physical left records an easy recall; right is a non-destructive look back.
+        if (direction > 0) {
+            int previousIndex = reviewCardIndex - 1;
+            if (previousIndex < 0) {
                 nudgeReviewCard(stage, direction);
                 return;
             }
-        } else if (direction > 0 && targetIndex < 0) {
-            nudgeReviewCard(stage, direction);
+            reviewAdvancing = true;
+            reviewProgressAnimationStart = reviewProgressValue();
+            animateReviewProgress = true;
+            reviewCardIndex = previousIndex;
+            reviewCardSwitching = true;
+            animateReviewCardTransition(stage, direction, this::showReview);
             return;
         }
+
+        MemoryCard memoryCard = reviewCards.get(reviewCardIndex);
         reviewAdvancing = true;
-        reviewCardIndex = targetIndex;
+        long reviewedAt = reviewPracticeMode
+                ? Math.max(System.currentTimeMillis(), reviewSessionStartedAt + 1)
+                : System.currentTimeMillis();
+        reviewProgressAnimationStart = reviewProgressValue();
+        db.review(memoryCard.id, "easy", reviewedAt);
+        reviewRatings.put(memoryCard.id, "easy");
+        animateReviewProgress = true;
+        ReviewNotifications.scheduleNext(this);
+        stage.activeCard().setEnabled(false);
+        moveToNextUnratedCard();
+        if (reviewCardIndex >= reviewCards.size()) {
+            reviewCardSwitching = true;
+            animateReviewCardExit(stage.activeCard(), direction, this::showReview);
+            return;
+        }
         reviewCardSwitching = true;
-        animateReviewCardExit(stage.activeCard(), direction, this::showReview);
+        animateReviewCardTransition(stage, direction, this::showReview);
     }
 
     private MemoryCard nextUnseenReviewCard() {
@@ -1252,8 +1408,28 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
 
     private void animateReviewCardExit(View card, int direction, Runnable onEnd) {
         float distance = Math.max(dp(120), card.getWidth() + dp(36));
-        card.animate().translationX(direction * distance).alpha(0.72f).rotation(direction * 1.1f)
-                .setDuration(210).setInterpolator(new DecelerateInterpolator())
+        card.animate().translationX(direction * distance).alpha(0f).rotation(direction * 30f)
+                .setDuration(250).setInterpolator(new DecelerateInterpolator())
+                .withEndAction(onEnd).start();
+    }
+
+    /**
+     * Finishes a gesture with the already-visible destination card.  Rebuilding the review page
+     * happens only after both layers are at their resting geometry, so there is no pop-in frame.
+     */
+    private void animateReviewCardTransition(ReviewSwipeStage stage, int direction, Runnable onEnd) {
+        View outgoing = stage.activeCard();
+        View incoming = stage.destinationCard(direction);
+        float distance = Math.max(dp(120), outgoing.getWidth() + dp(36));
+        if (incoming == null) {
+            animateReviewCardExit(outgoing, direction, onEnd);
+            return;
+        }
+        incoming.animate().translationX(0f).translationY(0f).rotation(0f)
+                .scaleX(1f).scaleY(1f).alpha(1f)
+                .setDuration(250).setInterpolator(new DecelerateInterpolator()).start();
+        outgoing.animate().translationX(direction * distance).alpha(0f).rotation(direction * 30f)
+                .setDuration(250).setInterpolator(new DecelerateInterpolator())
                 .withEndAction(onEnd).start();
     }
 
@@ -1489,10 +1665,18 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         scroll.setFillViewport(true);
         scroll.addView(body);
         content.removeAllViews();
-        content.addView(scroll, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-        ));
+        FrameLayout.LayoutParams pageParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+        );
+        if ("review".equals(currentPage) && reviewSwipeStage != null) {
+            ReviewScreenSwipeSurface surface = new ReviewScreenSwipeSurface();
+            surface.addView(scroll, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+            ));
+            content.addView(surface, pageParams);
+        } else {
+            content.addView(scroll, pageParams);
+        }
         boolean skipAnimation = suppressNextPageAnimation;
         suppressNextPageAnimation = false;
         if (themeTransitioning || skipAnimation) return;

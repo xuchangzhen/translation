@@ -372,6 +372,14 @@ public final class MemoryDb extends SQLiteOpenHelper {
 
     public synchronized MemoryCard nextDue(long now) { return nextDue(now, 0); }
 
+    public synchronized int dueCount(long now, long wordbookId) {
+        String scope = wordbookId > 0 ? " AND wordbook_id = ?" : "";
+        String[] arguments = wordbookId > 0
+                ? new String[]{String.valueOf(now), String.valueOf(wordbookId)}
+                : new String[]{String.valueOf(now)};
+        return scalarInt(getReadableDatabase(), "SELECT COUNT(*) FROM cards WHERE archived_at = 0 AND due_at <= ?" + scope, arguments);
+    }
+
     public synchronized MemoryCard nextDue(long now, long wordbookId) {
         Cursor cursor = getReadableDatabase().query(
                 "cards",
@@ -420,6 +428,14 @@ public final class MemoryDb extends SQLiteOpenHelper {
         } finally {
             cursor.close();
         }
+    }
+
+    public synchronized int practiceCount(long sessionStartedAt, long wordbookId) {
+        String scope = wordbookId > 0 ? " AND wordbook_id = ?" : "";
+        String[] arguments = wordbookId > 0
+                ? new String[]{String.valueOf(sessionStartedAt), String.valueOf(wordbookId)}
+                : new String[]{String.valueOf(sessionStartedAt)};
+        return scalarInt(getReadableDatabase(), "SELECT COUNT(*) FROM cards WHERE archived_at = 0 AND last_reviewed_at <= ?" + scope, arguments);
     }
 
     /** Returns the next practice card that has not already been shown in this self-study session. */
