@@ -451,37 +451,238 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
     private void showLibrary() {
         selectPage("library");
         LinearLayout body = pageBody();
-        MemoryDb.Stats stats = db.stats(System.currentTimeMillis());
+        long now = System.currentTimeMillis();
+        MemoryDb.Stats stats = db.stats(now);
+        List<Wordbook> wordbooks = db.wordbooks(now);
         body.addView(eyebrow("LIBRARY"));
-        body.addView(title("我的词库", 29));
-        Button importButton = linkButton("导入词库");
-        importButton.setOnClickListener(view -> wordbookImport.choose()); body.addView(importButton);
-        Button all = linkButton("全部 · " + stats.total + " 词 · 待复习 " + stats.due + " · 新词 " + stats.fresh);
-        all.setOnClickListener(view -> { libraryWordbookId = 0; libraryWordbookName = "全部"; libraryOffset = 0; showLibrary(); }); body.addView(all);
-        for (Wordbook book : db.wordbooks(System.currentTimeMillis())) {
-            Button select = linkButton(book.name + " · " + book.total + " 词 · 待复习 " + book.due + " · 新词 " + book.fresh);
-            select.setOnClickListener(view -> { libraryWordbookId = book.id; libraryWordbookName = book.name; libraryOffset = 0; showLibrary(); }); body.addView(select);
+        LinearLayout heading = new LinearLayout(this);
+        heading.setGravity(Gravity.CENTER_VERTICAL | Gravity.BOTTOM);
+        heading.addView(title("我的词库", 29), weighted());
+        Button importButton = importWordbookButton();
+        importButton.setOnClickListener(view -> wordbookImport.choose());
+        heading.addView(importButton, new LinearLayout.LayoutParams(dp(110), dp(44)));
+        body.addView(heading);
+        body.addView(subtitle("每一组词都有自己的语境和复习进度。"));
+
+        LinearLayout overview = card();
+        overview.setPadding(dp(18), dp(16), dp(18), dp(16));
+        LinearLayout overviewTitle = new LinearLayout(this);
+        overviewTitle.setGravity(Gravity.CENTER_VERTICAL);
+        overviewTitle.addView(label("词库总览", 13, INK, Typeface.BOLD), weighted());
+        overviewTitle.addView(statusPill(wordbooks.size() + " 个词库", BLUE));
+        overview.addView(overviewTitle);
+        TextView overviewHint = label("选择一个词库，只查看并复习其中的内容。", 10, MUTED, Typeface.NORMAL);
+        overviewHint.setPadding(0, dp(6), 0, dp(14));
+        overview.addView(overviewHint);
+        overview.addView(wordbookSelector(
+                "全部", "所有词库的统一视图", stats.total, stats.due, stats.fresh,
+                libraryWordbookId == 0, "全", BLUE,
+                () -> selectLibraryWordbook(0, "全部")
+        ));
+        for (Wordbook book : wordbooks) {
+            LinearLayout.LayoutParams selectorParams = fullWrap();
+            selectorParams.topMargin = dp(9);
+            overview.addView(wordbookSelector(
+                    book.name,
+                    book.id == 1 ? "桌面翻译自动接收" : "自定义词库 · 本地保存",
+                    book.total, book.due, book.fresh,
+                    libraryWordbookId == book.id,
+                    book.id == 1 ? "桌" : "词",
+                    book.id == 1 ? CORAL : LILAC,
+                    () -> selectLibraryWordbook(book.id, book.name)
+            ), selectorParams);
         }
-        body.addView(title(libraryWordbookName, 22));
+
+        LinearLayout.LayoutParams overviewParams = fullWrap();
+        overviewParams.topMargin = dp(18);
+        body.addView(overview, overviewParams);
+
+        LinearLayout selected = card();
+        selected.setPadding(dp(18), dp(16), dp(18), dp(17));
+        LinearLayout selectedHeading = new LinearLayout(this);
+        selectedHeading.setGravity(Gravity.CENTER_VERTICAL);
+        selectedHeading.addView(label("正在浏览", 10, BLUE, Typeface.BOLD), weighted());
+        int selectedAccent = libraryWordbookId == 1 ? CORAL : libraryWordbookId > 1 ? LILAC : BLUE;
+        selectedHeading.addView(statusPill(currentLibraryScope(), selectedAccent));
+        selected.addView(selectedHeading);
+        TextView selectedName = title(libraryWordbookName, 22);
+        selectedName.setPadding(0, dp(5), 0, dp(1));
+        selected.addView(selectedName);
+        selected.addView(librarySummary(libraryWordbookId == 0 ? stats.total : selectedWordbookTotal(wordbooks),
+                libraryWordbookId == 0 ? stats.due : selectedWordbookDue(wordbooks),
+                libraryWordbookId == 0 ? stats.fresh : selectedWordbookFresh(wordbooks)));
         Button study = primaryButton("开始学习 / 开始复习");
-        study.setOnClickListener(view -> { reviewWordbookId = libraryWordbookId; showReview(); }); body.addView(study);
+        study.setOnClickListener(view -> { reviewWordbookId = libraryWordbookId; showReview(); });
+        LinearLayout.LayoutParams studyParams = fullHeight(50);
+        studyParams.topMargin = dp(16);
+        selected.addView(study, studyParams);
+        LinearLayout.LayoutParams selectedParams = fullWrap();
+        selectedParams.topMargin = dp(14);
+        body.addView(selected, selectedParams);
+
         if (libraryWordbookId > 1) {
-            Button sync = linkButton("同步到已连接的其他设备");
+            Button sync = syncWordbookButton();
             sync.setOnClickListener(view -> uploadSelectedWordbook(sync));
-            body.addView(sync);
+            LinearLayout.LayoutParams syncParams = fullHeight(46);
+            syncParams.topMargin = dp(10);
+            body.addView(sync, syncParams);
         }
         List<MemoryCard> cards = db.recent(61, libraryWordbookId, libraryOffset);
-        if (cards.isEmpty()) body.addView(subtitle("这里还没有词条，可以导入本地词库或连接桌面自动同步。"));
+        TextView wordSection = sectionLabel(cards.isEmpty() ? "等待第一条词汇" : "词条 · 最近加入");
+        wordSection.setPadding(0, dp(20), 0, dp(8));
+        body.addView(wordSection);
+        if (cards.isEmpty()) body.addView(libraryEmptyState());
         for (MemoryCard memoryCard : cards.subList(0, Math.min(60, cards.size()))) body.addView(libraryRow(memoryCard));
         if (libraryOffset > 0) {
-            Button previous = linkButton("上一页");
-            previous.setOnClickListener(view -> { libraryOffset = Math.max(0, libraryOffset - 60); showLibrary(); }); body.addView(previous);
+            Button previous = paginationButton("← 上一页");
+            previous.setOnClickListener(view -> { libraryOffset = Math.max(0, libraryOffset - 60); showLibrary(); });
+            LinearLayout.LayoutParams previousParams = fullHeight(44);
+            previousParams.topMargin = dp(12);
+            body.addView(previous, previousParams);
         }
         if (cards.size() > 60) {
-            Button next = linkButton("下一页");
-            next.setOnClickListener(view -> { libraryOffset += 60; showLibrary(); }); body.addView(next);
+            Button next = paginationButton("下一页 →");
+            next.setOnClickListener(view -> { libraryOffset += 60; showLibrary(); });
+            LinearLayout.LayoutParams nextParams = fullHeight(44);
+            nextParams.topMargin = dp(8);
+            body.addView(next, nextParams);
         }
         setPage(body);
+    }
+
+    private void selectLibraryWordbook(long id, String name) {
+        libraryWordbookId = id;
+        libraryWordbookName = name;
+        libraryOffset = 0;
+        showLibrary();
+    }
+
+    private String currentLibraryScope() {
+        if (libraryWordbookId == 0) return "全部词库";
+        return libraryWordbookId == 1 ? "桌面同步" : "自定义词库";
+    }
+
+    private int selectedWordbookTotal(List<Wordbook> wordbooks) {
+        for (Wordbook book : wordbooks) if (book.id == libraryWordbookId) return book.total;
+        return 0;
+    }
+
+    private int selectedWordbookDue(List<Wordbook> wordbooks) {
+        for (Wordbook book : wordbooks) if (book.id == libraryWordbookId) return book.due;
+        return 0;
+    }
+
+    private int selectedWordbookFresh(List<Wordbook> wordbooks) {
+        for (Wordbook book : wordbooks) if (book.id == libraryWordbookId) return book.fresh;
+        return 0;
+    }
+
+    private Button importWordbookButton() {
+        Button button = new Button(this);
+        button.setText("＋ 导入词库");
+        button.setTextSize(11);
+        button.setAllCaps(false);
+        button.setTextColor(Color.WHITE);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setBackground(gradient(new int[]{BLUE, LILAC}, 14));
+        button.setContentDescription("导入词库文件");
+        applyFlatButtonBehavior(button);
+        return button;
+    }
+
+    private Button syncWordbookButton() {
+        Button button = new Button(this);
+        button.setText("↗  同步到已连接的设备");
+        button.setTextSize(11);
+        button.setAllCaps(false);
+        button.setTextColor(BLUE);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setBackground(rounded(withAlpha(BLUE, darkMode ? 38 : 20), 14,
+                withAlpha(BLUE, darkMode ? 100 : 72)));
+        button.setContentDescription("将当前词库加密同步到已连接的设备");
+        applyFlatButtonBehavior(button);
+        return button;
+    }
+
+    private Button paginationButton(String text) {
+        Button button = new Button(this);
+        button.setText(text);
+        button.setTextSize(11);
+        button.setAllCaps(false);
+        button.setTextColor(BLUE);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setBackground(rounded(CARD_RAISED, 13, LINE));
+        applyFlatButtonBehavior(button);
+        return button;
+    }
+
+    private LinearLayout wordbookSelector(
+            String name, String detail, int total, int due, int fresh,
+            boolean selected, String monogram, int accent, Runnable action
+    ) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(dp(13), dp(12), dp(13), dp(12));
+        row.setClickable(true);
+        row.setFocusable(true);
+        row.setContentDescription("词库 " + name + "，" + total + " 个词，待复习 " + due + "，新词 " + fresh);
+        row.setBackground(rounded(
+                selected ? withAlpha(accent, darkMode ? 48 : 22) : CARD_RAISED,
+                17,
+                selected ? withAlpha(accent, darkMode ? 130 : 100) : LINE
+        ));
+        row.setOnClickListener(view -> {
+            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+            action.run();
+        });
+        LinearLayout heading = new LinearLayout(this);
+        heading.setGravity(Gravity.CENTER_VERTICAL);
+        TextView icon = label(monogram, 11, selected ? Color.WHITE : accent, Typeface.BOLD);
+        icon.setGravity(Gravity.CENTER);
+        icon.setBackground(rounded(selected ? accent : withAlpha(accent, darkMode ? 48 : 24), 12));
+        heading.addView(icon, new LinearLayout.LayoutParams(dp(28), dp(28)));
+        LinearLayout names = vertical(0);
+        names.setPadding(dp(10), 0, dp(8), 0);
+        names.addView(label(name, 13, INK, Typeface.BOLD));
+        names.addView(label(detail, 9, MUTED, Typeface.NORMAL));
+        heading.addView(names, weighted());
+        if (selected) heading.addView(statusPill("已选择", accent));
+        row.addView(heading);
+        row.addView(wordbookMetrics(total, due, fresh));
+        return row;
+    }
+
+    private LinearLayout wordbookMetrics(int total, int due, int fresh) {
+        LinearLayout metrics = new LinearLayout(this);
+        metrics.setPadding(dp(38), dp(10), 0, 0);
+        metrics.addView(wordbookMetric("词条", total, INK), weighted());
+        metrics.addView(wordbookMetric("待复习", due, due > 0 ? CORAL : MUTED), weighted());
+        metrics.addView(wordbookMetric("新词", fresh, fresh > 0 ? BLUE : MUTED), weighted());
+        return metrics;
+    }
+
+    private LinearLayout librarySummary(int total, int due, int fresh) {
+        LinearLayout summary = wordbookMetrics(total, due, fresh);
+        summary.setPadding(0, dp(12), 0, 0);
+        return summary;
+    }
+
+    private LinearLayout wordbookMetric(String title, int value, int color) {
+        LinearLayout metric = vertical(0);
+        metric.addView(label(String.valueOf(value), 18, color, Typeface.BOLD));
+        metric.addView(label(title, 9, MUTED, Typeface.NORMAL));
+        return metric;
+    }
+
+    private LinearLayout libraryEmptyState() {
+        LinearLayout empty = vertical(0);
+        empty.setPadding(dp(17), dp(16), dp(17), dp(16));
+        applyInsetSurfaceStyle(empty, 18);
+        empty.addView(label("从第一组词开始", 14, INK, Typeface.BOLD));
+        TextView detail = label("导入自己的词库，或连接桌面后自动接收翻译内容。", 11, MUTED, Typeface.NORMAL);
+        detail.setPadding(0, dp(6), 0, 0);
+        empty.addView(detail);
+        return empty;
     }
 
     private void uploadSelectedWordbook(Button button) {
