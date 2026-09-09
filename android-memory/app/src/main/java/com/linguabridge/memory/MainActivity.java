@@ -841,8 +841,8 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         reviewCard.addView(speak);
 
         TextView swipeHint = label(recordedThisSession
-                ? "本轮已记录 · 左滑上一张  ·  右滑下一张"
-                : "左滑上一张  ·  右滑下一张", 10, MUTED, Typeface.NORMAL);
+                ? "本轮已记录 · 左滑下一张  ·  右滑上一张"
+                : "左滑下一张  ·  右滑上一张", 10, MUTED, Typeface.NORMAL);
         swipeHint.setGravity(Gravity.CENTER);
         swipeHint.setPadding(0, dp(8), 0, 0);
         reviewCard.addView(swipeHint);
@@ -898,8 +898,8 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                 : nextUnseenReviewCard();
         stage.setCards(
                 reviewCard,
-                previousCard == null ? null : reviewPreviewCard(previousCard, "上一张"),
-                nextCard == null ? null : reviewPreviewCard(nextCard, "下一张")
+                nextCard == null ? null : reviewPreviewCard(nextCard, "下一张"),
+                previousCard == null ? null : reviewPreviewCard(previousCard, "上一张")
         );
         LinearLayout.LayoutParams cardParams = fullWrap();
         cardParams.topMargin = dp(12);
@@ -986,8 +986,8 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         private boolean horizontalGesture;
         private final int touchSlop;
         private View activeCard;
-        private View previousCard;
-        private View nextCard;
+        private View leftCard;
+        private View rightCard;
 
         ReviewSwipeStage(SwipeListener listener) {
             super(MainActivity.this);
@@ -997,20 +997,20 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
             setClipToPadding(false);
         }
 
-        void setCards(View activeCard, View previousCard, View nextCard) {
+        void setCards(View activeCard, View leftCard, View rightCard) {
             this.activeCard = activeCard;
-            this.previousCard = previousCard;
-            this.nextCard = nextCard;
+            this.leftCard = leftCard;
+            this.rightCard = rightCard;
             FrameLayout.LayoutParams layout = new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             );
-            if (previousCard != null) {
-                addView(previousCard, new FrameLayout.LayoutParams(layout));
-                preparePreview(previousCard, -1);
+            if (leftCard != null) {
+                addView(leftCard, new FrameLayout.LayoutParams(layout));
+                preparePreview(leftCard, -1);
             }
-            if (nextCard != null) {
-                addView(nextCard, new FrameLayout.LayoutParams(layout));
-                preparePreview(nextCard, 1);
+            if (rightCard != null) {
+                addView(rightCard, new FrameLayout.LayoutParams(layout));
+                preparePreview(rightCard, 1);
             }
             addView(activeCard, layout);
             activeCard.setLayerType(View.LAYER_TYPE_HARDWARE, null);
@@ -1036,8 +1036,8 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
             float activeScale = 1f - progress * 0.025f;
             activeCard.setScaleX(activeScale);
             activeCard.setScaleY(activeScale);
-            updatePreview(dx < 0f ? previousCard : nextCard, dx < 0f ? -1 : 1, progress);
-            updatePreview(dx < 0f ? nextCard : previousCard, dx < 0f ? 1 : -1, 0f);
+            updatePreview(dx < 0f ? leftCard : rightCard, dx < 0f ? -1 : 1, progress);
+            updatePreview(dx < 0f ? rightCard : leftCard, dx < 0f ? 1 : -1, 0f);
         }
 
         private void updatePreview(View card, int direction, float progress) {
@@ -1055,8 +1055,8 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                         .scaleX(1f).scaleY(1f).alpha(1f).setDuration(220)
                         .setInterpolator(new android.view.animation.OvershootInterpolator(0.75f)).start();
             }
-            resetPreview(previousCard, -1);
-            resetPreview(nextCard, 1);
+            resetPreview(leftCard, -1);
+            resetPreview(rightCard, 1);
         }
 
         private void resetPreview(View card, int direction) {
@@ -1072,18 +1072,25 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                     downX = event.getX();
                     downY = event.getY();
                     horizontalGesture = false;
+                    // Reserve the first few pixels for this card: it lets a down-left or
+                    // down-right gesture become a swipe before the outer ScrollView grabs it.
+                    getParent().requestDisallowInterceptTouchEvent(true);
                     break;
                 case MotionEvent.ACTION_MOVE:
                     float dx = event.getX() - downX;
                     float dy = event.getY() - downY;
-                    if (Math.abs(dx) > touchSlop && Math.abs(dx) > Math.abs(dy) * 1.15f) {
+                    float horizontalStart = Math.max(1f, Math.min(touchSlop, dp(6)));
+                    if (Math.abs(dx) >= horizontalStart) {
                         horizontalGesture = true;
-                        getParent().requestDisallowInterceptTouchEvent(true);
                         return true;
+                    }
+                    if (Math.abs(dy) >= Math.max(dp(28), touchSlop * 2f)) {
+                        getParent().requestDisallowInterceptTouchEvent(false);
                     }
                     break;
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
+                    if (!horizontalGesture) getParent().requestDisallowInterceptTouchEvent(false);
                     return horizontalGesture;
             }
             return false;
@@ -1129,8 +1136,9 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
 
     private void navigateReview(int direction, ReviewSwipeStage stage) {
         if (reviewAdvancing) return;
-        int targetIndex = reviewCardIndex + direction;
-        if (direction > 0 && targetIndex >= reviewCards.size()) {
+        // Physical left goes forward; physical right returns to the card just seen.
+        int targetIndex = reviewCardIndex - direction;
+        if (direction < 0 && targetIndex >= reviewCards.size()) {
             MemoryCard next = nextUnseenReviewCard();
             if (next != null) {
                 reviewCards.add(next);
@@ -1138,7 +1146,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                 nudgeReviewCard(stage, direction);
                 return;
             }
-        } else if (direction < 0 && targetIndex < 0) {
+        } else if (direction > 0 && targetIndex < 0) {
             nudgeReviewCard(stage, direction);
             return;
         }
