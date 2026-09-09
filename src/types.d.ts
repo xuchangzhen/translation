@@ -29,8 +29,10 @@ interface AppSettings {
   popupAlwaysOnTop: boolean;
   androidMemorySyncEnabled: boolean;
   androidMemoryPaired: boolean;
+  androidMemoryPairingUnavailable: boolean;
   androidMemoryPairing: string;
   apiKeyConfigured: boolean;
+  apiKeyConfiguredByProvider: Partial<Record<Provider, boolean>>;
   apiKey: string;
 }
 
@@ -86,7 +88,7 @@ interface LinguaApi {
   ): Promise<{ settings: AppSettings; shortcutFailures: string[] }>;
   setThemeMode(mode: AppSettings["themeMode"]): Promise<AppSettings>;
   setShortcutRecording(active: boolean): Promise<boolean>;
-  clearApiKey(): Promise<AppSettings>;
+  clearApiKey(provider?: Provider): Promise<AppSettings>;
   copyText(text: string): Promise<boolean>;
   getMemorySyncStatus(): Promise<MemorySyncStatus>;
   getDesktopClients(): Promise<DesktopClientsResult>;
@@ -165,6 +167,7 @@ interface LinguaApi {
     abbreviations: AbbreviationItem[];
     alternatives: string[];
   }>;
+  compatibleModels(settings: Partial<AppSettings>): Promise<string[]>;
   testProvider(
     settings: Partial<AppSettings>
   ): Promise<{ ok: boolean; latencyMs: number; model: string; note?: string }>;

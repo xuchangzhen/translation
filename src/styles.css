@@ -692,6 +692,7 @@ kbd {
   gap: 8px;
   color: var(--phonetic);
   font-family: "Charis SIL", "Doulos SIL", serif;
+  font-style: normal;
   font-size: 18px;
   font-weight: 400;
   line-height: 1.55;
@@ -1891,6 +1892,7 @@ kbd {
   gap: 8px;
   color: var(--phonetic);
   font-family: "Charis SIL", "Doulos SIL", serif;
+  font-style: normal;
   font-size: 16px;
   font-weight: 400;
   line-height: 1.55;
@@ -2581,6 +2583,7 @@ html.popup-page[data-theme="dark"] .popup-spinner {
 }
 
 .app-shell .android-pairing-ready,
+.app-shell .android-pairing-recovery,
 .app-shell .desktop-join-panel,
 .app-shell .desktop-join-result,
 .app-shell .android-sync-overview,
@@ -2593,8 +2596,33 @@ html.popup-page[data-theme="dark"] .popup-spinner {
 }
 
 .app-shell .android-pairing-ready,
+.app-shell .android-pairing-recovery,
 .app-shell .desktop-join-panel {
   padding: 17px 18px;
+}
+
+.app-shell .android-pairing-recovery {
+  display: grid;
+  gap: 8px;
+  border-color: rgba(255, 150, 106, 0.36);
+}
+
+.app-shell .android-pairing-recovery > div {
+  display: grid;
+  gap: 5px;
+}
+
+.app-shell .android-pairing-recovery strong {
+  color: #ffb49e;
+  font-size: 13px;
+}
+
+.app-shell .android-pairing-recovery small,
+.app-shell .android-pairing-recovery p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
 }
 
 .app-shell .desktop-join-panel {
@@ -2644,6 +2672,20 @@ html.popup-page[data-theme="dark"] .popup-spinner {
 .app-shell .desktop-join-result > div {
   display: grid;
   gap: 3px;
+  width: 100%;
+}
+
+.app-shell .desktop-join-output {
+  margin-top: 7px;
+}
+
+.app-shell .desktop-join-output input {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 10px;
+}
+
+.app-shell .desktop-join-result .settings-actions {
+  margin-top: 6px;
 }
 
 .app-shell .android-pairing-result img {
@@ -3180,6 +3222,7 @@ html[data-theme-transition="active"]::view-transition-new(root) {
   color: #7d46b3;
 }
 .app-shell[data-theme="light"] .android-pairing-ready,
+.app-shell[data-theme="light"] .android-pairing-recovery,
 .app-shell[data-theme="light"] .desktop-join-panel,
 .app-shell[data-theme="light"] .desktop-join-result,
 .app-shell[data-theme="light"] .android-sync-overview,

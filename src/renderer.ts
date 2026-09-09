@@ -4,6 +4,7 @@ import brandIconLightUrl from "./assets/brand-icon-light.png";
 import QRCode from "qrcode";
 import { speakText } from "./speech";
 import { renderTranslatedText } from "./markdown";
+import { formatIpaForDisplay } from "./lib/ipa-display.cjs";
 
 const LANGUAGES = [
   ["auto", "自动检测"],
@@ -32,6 +33,7 @@ let ollamaCatalogLoading = false;
 let currentPlatform = "";
 let appVersion = "";
 let memorySyncStatus: MemorySyncStatus | null = null;
+let desktopJoinLink = "";
 let desktopClients: DesktopClientsResult | null = null;
 let resolvedDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
 
@@ -252,7 +254,7 @@ function providerLabel(provider: Provider) {
     ollama: "Mac mini · Ollama",
     google: "Google 翻译",
     openai: "OpenAI API",
-    compatible: "OpenAI 兼容服务",
+    compatible: "AI 中转站（OpenAI 兼容）",
     codex: "ChatGPT · Codex"
   }[provider];
 }
@@ -289,7 +291,7 @@ function settingsMarkup() {
               <option value="google" ${settings.provider === "google" ? "selected" : ""}>Google Cloud Translation</option>
               <option value="codex" ${settings.provider === "codex" ? "selected" : ""}>ChatGPT / Codex 额度（实验）</option>
               <option value="openai" ${settings.provider === "openai" ? "selected" : ""}>OpenAI Responses API</option>
-              <option value="compatible" ${settings.provider === "compatible" ? "selected" : ""}>OpenAI 兼容接口（LM Studio 等）</option>
+              <option value="compatible" ${settings.provider === "compatible" ? "selected" : ""}>AI 中转站（OpenAI 兼容）</option>
             </select>
           </label>
           <div class="provider-fields span-2" data-provider="ollama">
@@ -334,8 +336,11 @@ function settingsMarkup() {
             <label class="field"><span>模型</span><input id="setting-openai-model" value="${escapeAttribute(settings.openaiModel)}"></label>
           </div>
           <div class="provider-fields span-2" data-provider="compatible">
-            <label class="field"><span>兼容接口地址</span><input id="setting-compatible-url" value="${escapeAttribute(settings.compatibleBaseUrl)}"></label>
-            <label class="field"><span>模型</span><input id="setting-compatible-model" value="${escapeAttribute(settings.compatibleModel)}"></label>
+            <label class="field"><span>API Base URL</span><input placeholder="https://api.example.com/v1" id="setting-compatible-url" value="${escapeAttribute(settings.compatibleBaseUrl)}"></label>
+            <label class="field"><span>Model</span><input list="compatible-model-list" id="setting-compatible-model" value="${escapeAttribute(settings.compatibleModel)}"></label>
+            <datalist id="compatible-model-list"></datalist>
+            <button id="refresh-compatible-models" class="text-button" type="button">获取模型</button>
+            <p id="compatible-model-status">AI 翻译中转站 · 应用会把翻译请求发送到该服务的 OpenAI Chat Completions 接口。模型 ID 也可手动填写。</p>
           </div>
           <div class="provider-fields span-2" data-provider="codex">
             <label class="field"><span>Codex 可执行文件</span><input id="setting-codex-path" value="${escapeAttribute(settings.codexPath)}" placeholder="留空自动检测"></label>
@@ -360,10 +365,10 @@ function settingsMarkup() {
             <input id="setting-use-thinking" type="checkbox" ${settings.useThinking ? "checked" : ""}>
           </label>
           <label id="api-key-field" class="field span-2">
-            <span>API Key ${settings.apiKeyConfigured ? '<em class="saved-badge">已安全保存</em>' : ""}</span>
+            <span>API Key <em class="saved-badge">已安全保存</em></span>
             <div class="input-action">
               <input id="setting-api-key" type="password" autocomplete="off" placeholder="${settings.apiKeyConfigured ? "留空则保留现有 Key" : "sk-…"}">
-              ${settings.apiKeyConfigured ? '<button id="clear-api-key" class="text-button danger" type="button">清除</button>' : ""}
+              <button id="clear-api-key" class="text-button danger" type="button">清除</button>
             </div>
           </label>
           <div class="settings-actions span-2">
@@ -455,7 +460,12 @@ function settingsMarkup() {
             <input id="setting-android-memory-enabled" type="checkbox" ${settings.androidMemorySyncEnabled ? "checked" : ""}>
           </label>
           <div class="android-pairing span-2">
-            ${settings.androidMemoryPaired ? `
+            ${settings.androidMemoryPairingUnavailable ? `
+              <div class="android-pairing-recovery">
+                <div><strong>同步连接需要恢复</strong><small>这台电脑无法读取原有的系统安全存储凭据，因此不会发送队列中的词条。词条仍安全保存在本机。</small></div>
+                <p>请在安卓“单词记忆”应用打开“连接桌面翻译器”，点击“复制桌面端配对信息”；将内容粘贴到下方“恢复现有连接”中并保存设置。</p>
+              </div>
+            ` : settings.androidMemoryPaired ? `
               <div class="android-pairing-ready">
                 <div><strong>同步空间已连接 <em class="saved-badge">端到端加密</em></strong><small>Mac mini、Windows 和安卓可以使用同一个空间，不必重复配对手机。</small></div>
                 <div class="settings-actions">
@@ -477,7 +487,15 @@ function settingsMarkup() {
               </div>
               <div id="desktop-join-result" class="desktop-join-result" hidden>
                 <span class="desktop-join-icon">✓</span>
-                <div><strong>一次性加入链接已复制</strong><p id="desktop-join-status">在另一台电脑的“加入已有空间”中粘贴。链接 15 分钟后失效，且只能使用一次。</p></div>
+                <div>
+                  <strong id="desktop-join-title">一次性加入链接已复制</strong>
+                  <p id="desktop-join-status">在另一台电脑的“加入已有空间”中粘贴。链接 15 分钟后失效，且只能使用一次。</p>
+                  <label id="desktop-join-output-row" class="field desktop-join-output" hidden><span>一次性加入链接（请私下转发）</span><input id="desktop-join-output" type="password" readonly autocomplete="off"></label>
+                  <div id="desktop-join-actions" class="settings-actions" hidden>
+                    <button id="copy-desktop-join" class="button subtle" type="button">再次复制链接</button>
+                    <button id="toggle-desktop-join" class="text-button" type="button">显示链接</button>
+                  </div>
+                </div>
               </div>
             ` : `
               <div class="desktop-join-panel">
@@ -504,11 +522,11 @@ function settingsMarkup() {
               <img id="android-pairing-qr" alt="安卓单词记忆配对二维码">
               <div><strong>用安卓手机相机扫描</strong><p>点击相机识别出的链接，单词记忆应用会自动完成配置。二维码包含设备密钥，请勿转发。</p><button id="copy-android-pairing" class="text-button" type="button">复制备用连接信息</button></div>
             </div>
-            <details class="android-advanced">
-              <summary>旧版手动配对（高级）</summary>
+            <details class="android-advanced" ${settings.androidMemoryPairingUnavailable ? "open" : ""}>
+              <summary>${settings.androidMemoryPairingUnavailable ? "恢复现有连接" : "旧版手动配对（高级）"}</summary>
               <label class="field">
                 <span>设备配对信息</span>
-                <input id="setting-android-memory-pairing" type="password" autocomplete="off" placeholder="${settings.androidMemoryPaired ? "留空则保留当前连接" : "仅用于兼容旧版安卓端"}">
+                <input id="setting-android-memory-pairing" type="password" autocomplete="off" placeholder="${settings.androidMemoryPairingUnavailable ? "从安卓端粘贴完整配对信息" : settings.androidMemoryPaired ? "留空则保留当前连接" : "仅用于兼容旧版安卓端"}">
               </label>
             </details>
             <small class="field-help">服务器只中继 AES-256-GCM 密文；设备密钥使用系统安全存储保存。</small>
@@ -625,6 +643,8 @@ function bindEvents() {
   document
     .querySelector("#setting-provider")
     ?.addEventListener("change", (event) => {
+      const keyInput = document.querySelector<HTMLInputElement>("#setting-api-key");
+      if (keyInput) keyInput.value = "";
       refreshProviderFields();
       if ((event.target as HTMLSelectElement).value === "codex") {
         void loadCodexModels();
@@ -633,6 +653,31 @@ function bindEvents() {
         void loadOllamaModels();
       }
     });
+  for (const selector of ["#setting-compatible-url", "#setting-api-key"]) {
+    document.querySelector(selector)?.addEventListener("input", () => {
+      const list = document.querySelector("#compatible-model-list");
+      if (list) list.innerHTML = "";
+    });
+  }
+  document.querySelector("#refresh-compatible-models")?.addEventListener("click", async () => {
+    const button = document.querySelector<HTMLButtonElement>("#refresh-compatible-models")!;
+    const status = document.querySelector<HTMLElement>("#compatible-model-status")!;
+    button.disabled = true;
+    status.textContent = "正在获取模型…";
+    try {
+      const candidate = collectSettings();
+      const models = await window.lingua.compatibleModels(candidate);
+      if (!button.isConnected) return;
+      const current = collectSettings();
+      if (current.compatibleBaseUrl !== candidate.compatibleBaseUrl || current.apiKey !== candidate.apiKey) {
+        status.textContent = "API 配置已改变，请重新获取模型。";
+        return;
+      }
+      document.querySelector("#compatible-model-list")!.innerHTML = models.map(id => `<option value="${escapeAttribute(id)}"></option>`).join("");
+      status.textContent = `已获取 ${models.length} 个模型，可从 Model 输入框选择或手动填写。`;
+    } catch (error) { status.textContent = humanizeError(error); }
+    finally { button.disabled = false; }
+  });
   document
     .querySelector("#refresh-codex-models")
     ?.addEventListener("click", () => void loadCodexModels(true));
@@ -657,6 +702,12 @@ function bindEvents() {
   document
     .querySelector("#create-desktop-join")
     ?.addEventListener("click", () => void createDesktopJoin());
+  document
+    .querySelector("#copy-desktop-join")
+    ?.addEventListener("click", () => void copyDesktopJoinLink());
+  document
+    .querySelector("#toggle-desktop-join")
+    ?.addEventListener("click", toggleDesktopJoinLinkVisibility);
   document
     .querySelector("#join-desktop-space")
     ?.addEventListener("click", () => void joinDesktopSpace());
@@ -708,7 +759,7 @@ function bindEvents() {
     .querySelector("#codex-status")
     ?.addEventListener("click", () => void checkCodexStatus());
   document.querySelector("#clear-api-key")?.addEventListener("click", async () => {
-    settings = await window.lingua.clearApiKey();
+    settings = await window.lingua.clearApiKey(document.querySelector<HTMLSelectElement>("#setting-provider")!.value as Provider);
     renderShell();
     switchView("settings");
   });
@@ -1025,28 +1076,79 @@ async function renderAndroidPairing(pairingUri: string) {
 async function createDesktopJoin() {
   const button = document.querySelector<HTMLButtonElement>("#create-desktop-join");
   const panel = document.querySelector<HTMLElement>("#desktop-join-result");
+  const title = document.querySelector<HTMLElement>("#desktop-join-title");
   const status = document.querySelector<HTMLElement>("#desktop-join-status");
-  if (!button || !panel || !status) return;
+  const output = document.querySelector<HTMLInputElement>("#desktop-join-output");
+  const outputRow = document.querySelector<HTMLElement>("#desktop-join-output-row");
+  const actions = document.querySelector<HTMLElement>("#desktop-join-actions");
+  if (!button || !panel || !title || !status || !output || !outputRow || !actions) return;
   button.disabled = true;
   button.textContent = "正在生成…";
   panel.hidden = true;
+  status.classList.remove("error");
   try {
     const result = await window.lingua.createDesktopJoinLink();
-    await window.lingua.copyText(result.joinLink);
+    desktopJoinLink = result.joinLink;
+    output.value = desktopJoinLink;
+    output.type = "password";
+    outputRow.hidden = false;
+    actions.hidden = false;
     const expires = new Intl.DateTimeFormat("zh-CN", {
       hour: "2-digit",
       minute: "2-digit"
     }).format(new Date(result.expiresAt));
-    status.textContent = `已复制到剪贴板 · ${expires} 前有效 · 使用一次后立即失效`;
+    const copied = await window.lingua.copyText(desktopJoinLink);
+    title.textContent = copied ? "一次性加入链接已复制" : "一次性加入链接已生成";
+    status.textContent = copied
+      ? `已由系统剪贴板确认 · ${expires} 前有效 · 使用一次后立即失效`
+      : `系统剪贴板未确认写入。请点击“再次复制链接”，或显示后手动选择链接复制；${expires} 前有效。`;
+    status.classList.toggle("error", !copied);
     panel.hidden = false;
     button.textContent = "重新生成链接";
   } catch (error) {
+    desktopJoinLink = "";
+    output.value = "";
+    outputRow.hidden = true;
+    actions.hidden = true;
+    title.textContent = "无法生成加入链接";
     status.textContent = humanizeError(error);
     status.classList.add("error");
     panel.hidden = false;
     button.textContent = "重试添加电脑";
   } finally {
     button.disabled = false;
+  }
+}
+
+async function copyDesktopJoinLink() {
+  const button = document.querySelector<HTMLButtonElement>("#copy-desktop-join");
+  const status = document.querySelector<HTMLElement>("#desktop-join-status");
+  if (!button || !status || !desktopJoinLink) return;
+  button.disabled = true;
+  status.classList.remove("error");
+  try {
+    const copied = await window.lingua.copyText(desktopJoinLink);
+    if (!copied) throw new Error("系统剪贴板未确认写入，请显示链接后手动选择并复制");
+    status.textContent = "已由系统剪贴板确认。请通过你信任的方式将链接转到另一台电脑，并在 15 分钟内使用。";
+    button.textContent = "已确认复制";
+  } catch (error) {
+    status.textContent = humanizeError(error);
+    status.classList.add("error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function toggleDesktopJoinLinkVisibility() {
+  const output = document.querySelector<HTMLInputElement>("#desktop-join-output");
+  const button = document.querySelector<HTMLButtonElement>("#toggle-desktop-join");
+  if (!output || !button) return;
+  const visible = output.type === "text";
+  output.type = visible ? "password" : "text";
+  button.textContent = visible ? "显示链接" : "隐藏链接";
+  if (!visible) {
+    output.focus();
+    output.select();
   }
 }
 
@@ -1177,6 +1279,13 @@ function refreshProviderFields() {
   });
   const apiKeyField = document.querySelector<HTMLElement>("#api-key-field");
   if (apiKeyField) apiKeyField.hidden = provider === "ollama" || provider === "codex";
+  const configured = Boolean(settings.apiKeyConfiguredByProvider?.[provider as Provider]);
+  const keyInput = document.querySelector<HTMLInputElement>("#setting-api-key");
+  if (keyInput) keyInput.placeholder = configured ? "留空则保留该服务已保存的 Key" : "输入该服务的 API Key";
+  const badge = apiKeyField?.querySelector<HTMLElement>(".saved-badge");
+  if (badge) badge.hidden = !configured;
+  const clear = document.querySelector<HTMLButtonElement>("#clear-api-key");
+  if (clear) clear.hidden = !configured;
   const thinkingSetting = document.querySelector<HTMLElement>("#thinking-setting");
   const thinkingHelp = document.querySelector<HTMLElement>("#thinking-setting-help");
   if (thinkingSetting) thinkingSetting.hidden = provider === "google";
@@ -1184,7 +1293,7 @@ function refreshProviderFields() {
     thinkingHelp.textContent = {
       ollama: "关闭时会向 Ollama 发送 think: false，避免 Qwen 等模型进行思考并降低延迟。",
       openai: "关闭时会使用 Responses API 的 reasoning.effort=none；开启时使用 low。",
-      compatible: "会通过 reasoning_effort 请求关闭；部分兼容服务若不支持该参数，可能会忽略它。",
+      compatible: "通过 reasoning_effort 控制；服务明确拒绝兼容扩展参数时，会自动使用基础请求重试。",
       codex: "关闭时 Codex 使用 none；开启时使用 low。",
       google: "Google Cloud Translation 不使用模型思考。"
     }[provider] || "";
@@ -1322,7 +1431,7 @@ async function testSpeech() {
   button.disabled = true;
   try {
     const result = await window.lingua.testSpeech(collectSettings());
-    resultNode.textContent = `${result.message} · ${(result.latencyMs / 1000).toFixed(1)} 秒`;
+    resultNode.textContent = `${result.message} · ${result.latencyMs} ms`;
     resultNode.className = "success";
   } catch (error) {
     resultNode.textContent = humanizeError(error);
@@ -1564,7 +1673,7 @@ function renderResult(result: TranslationResult) {
     const phoneticLabel = document.createElement("small");
     phoneticLabel.textContent = "英文音标";
     const ipa = document.createElement("span");
-    ipa.textContent = result.phonetic;
+    ipa.textContent = formatIpaForDisplay(result.phonetic);
     const play = actionButton(
       "朗读原文",
       "speaker",
@@ -2059,7 +2168,7 @@ async function testConnection() {
   button.disabled = true;
   try {
     const result = await window.lingua.testProvider(collectSettings());
-    resultNode.textContent = `连接成功 · ${result.model} · ${(result.latencyMs / 1000).toFixed(1)} 秒${result.note ? ` · ${result.note}` : ""}`;
+    resultNode.textContent = `连接成功 · ${result.model} · ${result.latencyMs} ms${result.note ? ` · ${result.note}` : ""}`;
     resultNode.className = "success";
   } catch (error) {
     resultNode.textContent = humanizeError(error);

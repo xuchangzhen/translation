@@ -86,6 +86,69 @@ Mac mini 版会运行一个很轻量的局域网后台桥（端口 `19876`），
 - Android 端先展示英文供主动回忆，再根据“忘记 / 模糊 / 记得 / 轻松”安排 10 分钟到逐步增长的复习间隔。
 - 桌面配对凭据使用系统安全存储；Android 凭据使用 Android Keystore；内容密钥只存在于两端，服务器数据库仅保存密文。
 
+## 自定义词库
+
+Android “词库 → 导入词库”使用系统文件选择器，支持 UTF-8、UTF-16 和 GB18030 编码的 CSV / TSV / TXT / JSON，无需授予存储读写权限。选择文件后先显示检测到的编码、有效、文件内重复、无效词条数量及前 8 条预览；确认名称并点击导入后才写入数据库。
+
+最简单的 CET-4 CSV：
+
+```csv
+word,translation,phonetic
+abandon,放弃,/əˈbændən/
+ability,能力,/əˈbɪləti/
+```
+
+专业术语 CSV：
+
+```csv
+term,translation,definition,category
+cache,高速缓存,用于临时保存频繁访问的数据,计算机体系结构
+interrupt,中断,CPU暂停当前执行流并处理事件的机制,嵌入式
+```
+
+- 单词列别名：`front / word / term / english`；释义列别名：`back / translation / meaning / chinese`。
+- 可选列：`phonetic / ipa`、`definition`、`category / tag`、`context / example`。定义保存在技术说明中，分类和语境分别显示。
+- CSV 支持 BOM、带引号字段、引号中的逗号或换行、双引号转义 `""`，以及 CRLF / LF。无表头时前两列作为单词、释义，之后依次为音标、定义、分类、语境。
+- TSV / TXT 使用**真正的 Tab**分隔单词与中文，普通空格不是分隔符。忽略空行、字段前后空格和以 `#` 开头的注释行。
+- JSON 支持直接词条数组，也支持带名称的对象：
+
+```json
+{
+  "name": "CET-4",
+  "items": [
+    {"front": "abandon", "back": "放弃", "phonetic": "/əˈbændən/"}
+  ]
+}
+```
+
+默认词库名称取 JSON 的 `name`，否则取文件名去掉扩展名；导入前可修改。**填写已有本地词库的相同名称会更新该词库**；文件内同词按大小写、Unicode NFKC 和空白标准化去重，最后一个有效条目生效。更新会替换内容字段（未提供的可选字段会清空），保留卡片 ID、复习状态、到期时间、间隔、重复次数和历史日志。同一个 `cache` 可以在 CET-4 和计算机词库拥有不同释义及独立复习进度。
+
+自定义词库首先写入 Android 本机 SQLite；在词库页面点击“同步到已连接的其他设备”后，会通过独立的 `linguabridge-wordbooks/1` 协议，以 AES-256-GCM 密文分片上传到同一同步空间。其他已配对 Android 会自动下载并在本机解密，服务器只保存密文版本，不会看到单词或释义。桌面加密自动同步的内容统一位于保留词库“桌面翻译”，不能以此名称导入本地文件。所有词库的新卡片立即参加现有间隔复习；Today 汇总所有词库，也可在指定词库点击“开始学习 / 开始复习”。词条每页显示 60 条，可翻页查看完整词库。
+
+导入在后台线程中解析，并使用一个数据库事务写入；已自动测试 20,000 条词汇。单文件上限为 64 MB / 100,000 条，自动识别 UTF-8 BOM、UTF-16LE/BE，也可显式选择 GB18030/GBK；不支持 XLSX 或 Anki 包。字段过长会计入无效条目（单词 1000、释义/语境 2000、定义 1000、音标/分类 300 字符）。预览的重复数是文件内重复；完成结果另报数据库新增、更新、忽略和无效数。
+
+数据库从 v1 升级到 v3：新增 `wordbooks(id, name, source)`，`cards` 增加 `wordbook_id` 和 `category`，唯一约束改为 `(wordbook_id, sync_key)`；v3 再增加 `cloud_id/cloud_space/cloud_version/local_revision/synced_revision`。迁移在 SQLiteOpenHelper 事务中复制全部原卡片列和原始 ID 到新表，默认归属词库 1“桌面翻译”，完成后替换旧表；不删除数据库文件，`review_log` 原表保留。桌面同步仍使用原始去重键且固定作用于词库 1；本地导入没有同步批次的 100 条限制。
+
+## AI 中转站翻译
+
+在 macOS / Windows 设置中选择“AI 中转站（OpenAI 兼容）”。这里的中转站是提供 AI 模型的翻译 API，不是下方用于手机词库加密同步的服务器：
+
+| 配置 | 示例 |
+| --- | --- |
+| API Base URL | `https://api.example.com/v1` |
+| API Key | 服务商提供的密钥，在密码框中填写 |
+| Model | provider 提供的 model id |
+
+应用会把翻译和技术解析请求发送到这个 AI 中转站。服务必须兼容 **OpenAI Chat Completions API**；模型名称由中转站服务商决定，不能仅凭模型所属厂商判断协议兼容性。保留原有 `compatible` provider，也继续支持无需密钥的本地兼容服务。手机词库同步使用另一套独立的加密同步服务，不会把翻译请求发到那里。
+
+“获取模型”请求 `GET {baseUrl}/models`，使用 `Authorization: Bearer <API_KEY>`，读取 `data[].id`。Model 输入框提供列表建议，同时始终允许手动填写；服务没有模型列表时会提示手动输入，不阻止使用。“测试连接”发送简短的真实 Chat Completions 请求，返回模型与毫秒延迟；会对权限、地址、额度、服务故障和超时给出简明提示，不显示完整服务错误页。
+
+翻译及技术解析请求 `POST {baseUrl}/chat/completions`。自动移除 Base URL 尾部斜杠；误填完整 `/chat/completions` 或 `/models` 路径时会还原成 Base URL，避免重复拼接。地址不能带用户名、密码、查询参数或片段。
+
+默认发送 `model/messages/temperature/reasoning_effort/response_format`。仅当 HTTP 400 明确指出 `reasoning_effort` 或 `response_format` 不支持时，自动以 `model/messages/temperature` 重试一次；其他 400 不重试。降级仍保留提示词中的 JSON 输出要求并使用现有解析器。
+
+Google、OpenAI、Compatible 三组 Key 使用 Electron `safeStorage` 分别加密，macOS / Windows 共用实现。设置 schema 升到 v7，旧版单密钥迁入升级前选中的 API provider，不复制到其他服务。旧配置若选中 Ollama/Codex，无法可靠判断原密钥归属，保留旧密文但需为 API 服务重新填写密钥。renderer 只收到配置状态和空密钥值，不收到已保存的明文或密文；切换服务后，未保存的密码输入会清空，避免误存到其他 provider。
+
 ### 部署加密同步服务
 
 服务端位于 [`sync-server`](sync-server)，提供 PostgreSQL 持久化、设备读写令牌、注册密钥保护、限流、长轮询即时下发和 Caddy 自动 HTTPS。日常部署推荐让维护者直接运行自动化脚本，用户只需提供 SSH 地址和同步子域名：
@@ -120,6 +183,8 @@ docker compose up -d --build
 ```
 
 将域名解析到服务器并开放 80/443 后，访问 `https://你的域名/healthz` 检查服务。在桌面翻译器中填写同步地址和一次性服务器注册码，点击“一键连接手机”；再用安卓手机相机扫描本机生成的二维码，应用会自动验证、保存密钥并开启后台接收。无需复制长密钥或手动导入。
+
+本次词库跨设备同步新增了 PostgreSQL 表和接口。若由远端 OpenClaw 执行部署、迁移和验收，请使用 [`docs/remote-openclaw-wordbook-deploy-prompt.md`](docs/remote-openclaw-wordbook-deploy-prompt.md) 中的完整提示词；它包含备份、健康检查、接口验收、脱敏和回滚要求。
 
 ### 构建 Android 应用
 

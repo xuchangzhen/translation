@@ -3,6 +3,7 @@ import brandIconUrl from "./assets/brand-icon.png";
 import brandIconLightUrl from "./assets/brand-icon-light.png";
 import { speakText } from "./speech";
 import { renderTranslatedText } from "./markdown";
+import { formatIpaForDisplay } from "./lib/ipa-display.cjs";
 
 const root = document.querySelector<HTMLDivElement>("#popup-root")!;
 const POPUP_TARGET_LANGUAGES = [
@@ -246,7 +247,7 @@ function renderResult(result: TranslationResult, source: string) {
       </section>`
     : "";
   const phonetic = result.phonetic && isSingleEnglishWord(sourceText)
-    ? `<div class="popup-phonetic"><div class="popup-phonetic-text"><small>英文音标</small><span>${escapeHtml(result.phonetic)}</span></div></div>`
+    ? `<div class="popup-phonetic"><div class="popup-phonetic-text"><small>英文音标</small><span>${escapeHtml(formatIpaForDisplay(result.phonetic))}</span></div></div>`
     : "";
 
   root.innerHTML = shell(

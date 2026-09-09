@@ -1,0 +1,48 @@
+name: 跨平台验证
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            command: build:mac
+          - os: windows-latest
+            command: build:win
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test:desktop
+      - run: pnpm build:renderer
+      - run: pnpm run ${{ matrix.command }}
+      - name: Electron safeStorage and compatible API smoke
+        run: pnpm exec electron scripts/verify-desktop-runtime.cjs
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - run: chmod +x android-memory/gradlew
+      - run: android-memory/gradlew -p android-memory testDebugUnitTest assembleDebug

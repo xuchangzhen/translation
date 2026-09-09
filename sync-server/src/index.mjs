@@ -11,6 +11,15 @@ if (!databaseUrl && !process.env.PGHOST) {
 }
 const repository = new PostgresMemoryRepository(databaseUrl);
 await repository.initialize();
+let cleaningWordbooks = false;
+const cleanupTimer = setInterval(async () => {
+  if (cleaningWordbooks) return;
+  cleaningWordbooks = true;
+  try { await repository.cleanupWordbooks(); }
+  catch { console.error("Wordbook retention cleanup failed; will retry next hour"); }
+  finally { cleaningWordbooks = false; }
+}, 60 * 60 * 1000);
+cleanupTimer.unref();
 
 const server = http.createServer(createHandler({ repository, registrationKey }));
 server.requestTimeout = 35_000;
@@ -20,6 +29,7 @@ server.listen(port, "0.0.0.0", () => {
 });
 
 async function shutdown() {
+  clearInterval(cleanupTimer);
   server.close(async () => {
     await repository.close();
     process.exit(0);

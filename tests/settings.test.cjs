@@ -103,6 +103,25 @@ test("enables automatic Android memory delivery by default", () => {
   }
 });
 
+test("flags an unreadable encrypted Android pairing for recovery instead of connected", () => {
+  const userDataPath = fs.mkdtempSync(
+    path.join(os.tmpdir(), "translation-settings-")
+  );
+  try {
+    fs.writeFileSync(
+      path.join(userDataPath, "settings.json"),
+      JSON.stringify({
+        androidMemoryPairingEncrypted: "not-a-valid-safe-storage-payload"
+      })
+    );
+    const publicSettings = new SettingsStore(userDataPath).publicValue();
+    assert.equal(publicSettings.androidMemoryPaired, false);
+    assert.equal(publicSettings.androidMemoryPairingUnavailable, true);
+  } finally {
+    fs.rmSync(userDataPath, { recursive: true, force: true });
+  }
+});
+
 test("creates a stable desktop identity and persists the selected theme", () => {
   const userDataPath = fs.mkdtempSync(
     path.join(os.tmpdir(), "translation-settings-")

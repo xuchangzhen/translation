@@ -1,3 +1,4 @@
+const { normalizeBaseUrl, compatibleChat, compatibleModels } = require("./compatible.cjs");
 const LANGUAGE_NAMES = {
   auto: "自动检测",
   "zh-CN": "简体中文",
@@ -95,10 +96,6 @@ const ENRICHMENT_SCHEMA = {
     "alternatives"
   ]
 };
-
-function normalizeBaseUrl(value) {
-  return String(value || "").trim().replace(/\/+$/, "");
-}
 
 function isLocalHostname(hostname) {
   return ["127.0.0.1", "localhost", "::1"].includes(
@@ -811,24 +808,7 @@ async function translateWithGoogle(text, settings, apiKey, technicalMode = false
 }
 
 async function translateWithCompatible(text, settings, apiKey, technicalMode = false) {
-  const headers = { "Content-Type": "application/json" };
-  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-  const payload = await fetchJson(
-    `${normalizeBaseUrl(settings.compatibleBaseUrl)}/chat/completions`,
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        model: settings.compatibleModel,
-        messages: buildMessages(text, settings, technicalMode),
-        temperature: 0.1,
-        // OpenAI-compatible services that implement this extension (including
-        // many local Qwen servers) use it to control hidden reasoning.
-        reasoning_effort: settings.useThinking === true ? "low" : "none",
-        response_format: { type: "json_object" }
-      })
-    }
-  );
+  const payload = await compatibleChat(settings, apiKey, buildMessages(text, settings, technicalMode));
   return parseTranslationResult(
     extractResponseText(payload),
     settings.targetLanguage,
@@ -837,22 +817,7 @@ async function translateWithCompatible(text, settings, apiKey, technicalMode = f
 }
 
 async function enrichWithCompatible(text, translation, settings, apiKey) {
-  const headers = { "Content-Type": "application/json" };
-  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-  const payload = await fetchJson(
-    `${normalizeBaseUrl(settings.compatibleBaseUrl)}/chat/completions`,
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        model: settings.compatibleModel,
-        messages: buildEnrichmentMessages(text, translation, settings),
-        temperature: 0.1,
-        reasoning_effort: settings.useThinking === true ? "low" : "none",
-        response_format: { type: "json_object" }
-      })
-    }
-  );
+  const payload = await compatibleChat(settings, apiKey, buildEnrichmentMessages(text, translation, settings));
   return parseEnrichmentResult(extractResponseText(payload));
 }
 
@@ -1154,6 +1119,11 @@ async function enrichTranslation(text, translation, settings, apiKey = "") {
 
 async function testProvider(settings, apiKey = "") {
   const startedAt = Date.now();
+  if (settings.provider === "compatible") {
+    const payload = await compatibleChat(settings, apiKey, [{ role: "user", content: "Reply only OK." }], false);
+    if (!extractResponseText(payload).trim()) throw new Error("API 没有返回模型回复，请检查模型 ID");
+    return { ok: true, latencyMs: Date.now() - startedAt, model: settings.compatibleModel };
+  }
   if (settings.provider === "codex") {
     return codexLoginStatus(settings);
   }
@@ -1196,6 +1166,7 @@ async function testProvider(settings, apiKey = "") {
 }
 
 module.exports = {
+  compatibleModels,
   LANGUAGE_NAMES,
   buildMessages,
   buildEnrichmentMessages,

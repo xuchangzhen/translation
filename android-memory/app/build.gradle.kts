@@ -16,8 +16,8 @@ android {
         applicationId = "com.linguabridge.memory"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.3.1"
+        versionCode = 5
+        versionName = "0.4.0"
 
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
     }
@@ -51,6 +51,8 @@ android {
         }
     }
 
+    testOptions { unitTests.isIncludeAndroidResources = true }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -60,4 +62,5 @@ android {
 dependencies {
     implementation("androidx.core:core:1.15.0")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.16.1")
 }

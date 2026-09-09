@@ -93,6 +93,7 @@ public final class CloudSyncService extends Service {
                     broadcast("received", "已自动接收 " + imported + " 条", imported);
                     ReviewNotifications.notifyDue(this);
                 }
+                syncCloudWordbooks(config, db);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
                 return;
@@ -105,6 +106,27 @@ public final class CloudSyncService extends Service {
                     return;
                 }
             }
+        }
+    }
+
+    private void syncCloudWordbooks(SyncConfig config, MemoryDb db) {
+        try {
+            org.json.JSONArray summaries = CloudApi.listWordbooks(config);
+            for (int i = 0; i < summaries.length() && !stopping.get(); i++) {
+                org.json.JSONObject summary = summaries.getJSONObject(i);
+                if (db.cloudWordbookVersion(summary.optString("id"), config.deviceId) >= summary.optLong("version", 0)) continue;
+                CloudApi.DownloadedWordbook downloaded = CloudApi.downloadWordbook(config, summary);
+                String json = downloaded.items.toString();
+                ImportPreview preview = WordbookImporter.parse(json, downloaded.name + ".json");
+                MemoryDb.WordbookImportResult result = db.applyCloudWordbook(
+                        preview, downloaded.id, config.deviceId, downloaded.version
+                );
+                if (result.added + result.updated > 0) {
+                    broadcast("wordbooks", "已同步词库“" + downloaded.name + "”", result.added + result.updated);
+                }
+            }
+        } catch (Exception ignored) {
+            // Wordbook sync is independent from desktop translation delivery.
         }
     }
 

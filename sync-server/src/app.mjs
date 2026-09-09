@@ -2,7 +2,13 @@ import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 
 const PROTOCOL = "linguabridge-memory/1";
+const WORDBOOK_PROTOCOL = "linguabridge-wordbooks/1";
 const MAX_BODY_BYTES = 1024 * 1024;
+const MAX_WORDBOOK_BODY_BYTES = 512 * 1024;
+const MAX_WORDBOOKS = 200;
+const MAX_WORDBOOK_CHUNKS = 1024;
+const UPLOAD_RETENTION_MS = 24 * 60 * 60 * 1000;
+const SNAPSHOT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const DEVICE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
@@ -22,14 +28,14 @@ function json(response, status, body) {
   response.end(payload);
 }
 
-async function readJson(request) {
+async function readJson(request, maxBytes = MAX_BODY_BYTES) {
   const declaredLength = Number(request.headers["content-length"] || 0);
-  if (declaredLength > MAX_BODY_BYTES) throw Object.assign(new Error("请求过大"), { status: 413 });
+  if (declaredLength > maxBytes) throw Object.assign(new Error("请求过大"), { status: 413 });
   const chunks = [];
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > MAX_BODY_BYTES) throw Object.assign(new Error("请求过大"), { status: 413 });
+    if (size > maxBytes) throw Object.assign(new Error("请求过大"), { status: 413 });
     chunks.push(chunk);
   }
   try {
@@ -73,6 +79,44 @@ function transferPath(pathname) {
   return match ? decodeURIComponent(match[1]) : "";
 }
 
+function wordbookPath(pathname) {
+  const match = pathname.match(/^\/v1\/devices\/([^/]+)\/wordbooks(?:\/([^/]+)\/uploads\/([^/]+)\/(?:chunks\/(\d+)|(commit)))?$/);
+  if (!match || !DEVICE_ID_PATTERN.test(match[1])) return null;
+  if (match[2] && (!DEVICE_ID_PATTERN.test(match[2]) || !DEVICE_ID_PATTERN.test(match[3]))) return null;
+  return {
+    deviceId: match[1],
+    bookId: match[2]?.toLowerCase(),
+    uploadId: match[3]?.toLowerCase(),
+    index: match[4] === undefined ? null : Number(match[4]),
+    commit: Boolean(match[5])
+  };
+}
+
+function wordbookError(message, status = 409) {
+  return Object.assign(new Error(message), { status });
+}
+
+function encryptedValue(envelope) {
+  if (typeof envelope?.nonce !== "string" || typeof envelope?.ciphertext !== "string" || !validEnvelope(envelope)) {
+    throw wordbookError("词库密文格式无效", 400);
+  }
+  return { algorithm: "A256GCM", nonce: envelope.nonce, ciphertext: envelope.ciphertext };
+}
+
+function sameEnvelope(left, right) {
+  return left?.algorithm === right?.algorithm && left?.nonce === right?.nonce && left?.ciphertext === right?.ciphertext;
+}
+
+function wordbookSummary(upload) {
+  return {
+    id: upload.bookId,
+    version: upload.version,
+    uploadId: upload.uploadId,
+    chunkCount: upload.chunkCount,
+    manifest: structuredClone(upload.manifest)
+  };
+}
+
 function validEnvelope(envelope) {
   return envelope?.algorithm === "A256GCM" &&
     BASE64URL_PATTERN.test(envelope.nonce || "") &&
@@ -87,6 +131,8 @@ export class MemoryRepository {
     this.batches = new Map();
     this.transfers = new Map();
     this.clients = new Map();
+    this.wordbookUploads = new Map();
+    this.wordbooks = new Map();
   }
 
   async createDevice(device) {
@@ -171,6 +217,70 @@ export class MemoryRepository {
       .filter((client) => client.lastSeenAt >= cutoff)
       .sort((left, right) => right.lastSeenAt - left.lastSeenAt);
   }
+
+  cleanupWordbooks(deviceId) {
+    const uploads = this.wordbookUploads.get(deviceId);
+    if (!uploads) return;
+    const now = Date.now();
+    for (const [key, upload] of uploads) {
+      if ((!upload.version && upload.createdAt < now - UPLOAD_RETENTION_MS) ||
+          (upload.retiredAt && upload.retiredAt < now - SNAPSHOT_RETENTION_MS)) uploads.delete(key);
+    }
+  }
+
+  async listWordbooks(deviceId) {
+    return [...(this.wordbooks.get(deviceId)?.values() || [])]
+      .map(wordbookSummary).sort((left, right) => left.id.localeCompare(right.id));
+  }
+
+  getOrCreateWordbookUpload(deviceId, bookId, uploadId) {
+    this.cleanupWordbooks(deviceId);
+    const uploads = this.wordbookUploads.get(deviceId) || new Map();
+    const key = `${bookId}/${uploadId}`;
+    let upload = uploads.get(key);
+    if (!upload) {
+      const bookIds = new Set([...uploads.values()].map((item) => item.bookId));
+      if (!bookIds.has(bookId) && bookIds.size >= MAX_WORDBOOKS) throw wordbookError("同步空间最多保存 200 个词库", 413);
+      upload = { bookId, uploadId, version: 0, chunks: new Map(), createdAt: Date.now(), retiredAt: null };
+      uploads.set(key, upload);
+      this.wordbookUploads.set(deviceId, uploads);
+    }
+    return upload;
+  }
+
+  async putWordbookChunk(deviceId, bookId, uploadId, index, envelope) {
+    const upload = this.getOrCreateWordbookUpload(deviceId, bookId, uploadId);
+    const previous = upload.chunks.get(index);
+    if (previous && sameEnvelope(previous, envelope)) return;
+    if (previous || upload.version) throw wordbookError("此上传分片已经固定，请创建新的上传编号");
+    upload.chunks.set(index, structuredClone(envelope));
+  }
+
+  async commitWordbook(deviceId, bookId, uploadId, { baseVersion, chunkCount, manifest }) {
+    // No awaits between checking the base version and publishing: the in-memory
+    // implementation has the same atomic visibility as the PostgreSQL transaction.
+    const upload = this.getOrCreateWordbookUpload(deviceId, bookId, uploadId);
+    if (upload.version) {
+      if (upload.chunkCount !== chunkCount || !sameEnvelope(upload.manifest, manifest)) throw wordbookError("此上传编号已用于其他提交");
+      return wordbookSummary(upload);
+    }
+    const books = this.wordbooks.get(deviceId) || new Map();
+    const current = books.get(bookId);
+    if ((current?.version || 0) !== baseVersion) throw wordbookError("词库已由其他设备更新，请重新下载后同步");
+    if (upload.chunks.size !== chunkCount || Array.from({ length: chunkCount }, (_, index) => index).some((index) => !upload.chunks.has(index))) {
+      throw wordbookError("词库分片不完整，请完成上传后重试");
+    }
+    if (current) current.retiredAt = Date.now();
+    Object.assign(upload, { version: baseVersion + 1, chunkCount, manifest: structuredClone(manifest) });
+    books.set(bookId, upload);
+    this.wordbooks.set(deviceId, books);
+    return wordbookSummary(upload);
+  }
+
+  async getWordbookChunk(deviceId, bookId, uploadId, index) {
+    const upload = this.wordbookUploads.get(deviceId)?.get(`${bookId}/${uploadId}`);
+    return upload?.version && upload.chunks.has(index) ? structuredClone(upload.chunks.get(index)) : null;
+  }
 }
 
 export function createHandler({ repository, registrationKey, longPollMs = 25_000 }) {
@@ -181,8 +291,8 @@ export function createHandler({ repository, registrationKey, longPollMs = 25_000
   events.setMaxListeners(1000);
   const rateBuckets = new Map();
 
-  function rateLimited(request) {
-    const address = request.socket.remoteAddress || "unknown";
+  function rateLimited(request, wordbooks = false) {
+    const address = `${request.socket.remoteAddress || "unknown"}:${wordbooks ? "wordbooks" : "memory"}`;
     const now = Date.now();
     const bucket = rateBuckets.get(address);
     if (!bucket || now - bucket.startedAt >= 60_000) {
@@ -190,7 +300,8 @@ export function createHandler({ repository, registrationKey, longPollMs = 25_000
       return false;
     }
     bucket.count += 1;
-    return bucket.count > 180;
+    // A complete 1024-part upload followed by a download must fit one window.
+    return bucket.count > (wordbooks ? 2400 : 180);
   }
 
   async function authorize(request, deviceId, mode) {
@@ -211,13 +322,14 @@ export function createHandler({ repository, registrationKey, longPollMs = 25_000
 
   return async function handler(request, response) {
     try {
-      if (rateLimited(request)) {
+      const url = new URL(request.url, "http://relay.local");
+      const wordbookRoute = wordbookPath(url.pathname);
+      if (rateLimited(request, Boolean(wordbookRoute))) {
         json(response, 429, { error: "请求过于频繁" });
         return;
       }
-      const url = new URL(request.url, "http://relay.local");
       if (request.method === "GET" && url.pathname === "/healthz") {
-        json(response, 200, { ok: true, protocol: PROTOCOL });
+        json(response, 200, { ok: true, protocol: PROTOCOL, protocols: [PROTOCOL, WORDBOOK_PROTOCOL] });
         return;
       }
 
@@ -261,6 +373,47 @@ export function createHandler({ repository, registrationKey, longPollMs = 25_000
           envelope: transfer.envelope,
           expiresAt: transfer.expiresAt
         });
+        return;
+      }
+
+      if (wordbookRoute) {
+        const { deviceId, bookId, uploadId, index, commit } = wordbookRoute;
+        // The desktop upload credential intentionally has no access to phone
+        // wordbooks. Every operation requires the paired phones' read token.
+        await authorize(request, deviceId, "read");
+        if (request.method === "GET" && !bookId) {
+          json(response, 200, { protocol: WORDBOOK_PROTOCOL, wordbooks: await repository.listWordbooks(deviceId) });
+          return;
+        }
+        if (index !== null && (!Number.isInteger(index) || index < 0 || index >= MAX_WORDBOOK_CHUNKS)) {
+          throw wordbookError("词库分片编号无效", 400);
+        }
+        if (request.method === "GET" && index !== null) {
+          const envelope = await repository.getWordbookChunk(deviceId, bookId, uploadId, index);
+          if (!envelope) throw wordbookError("已提交的词库分片不存在", 404);
+          json(response, 200, { protocol: WORDBOOK_PROTOCOL, envelope });
+          return;
+        }
+        if (request.method === "PUT" && index !== null) {
+          const body = await readJson(request, MAX_WORDBOOK_BODY_BYTES);
+          if (body.protocol !== WORDBOOK_PROTOCOL) throw wordbookError("词库同步协议无效", 400);
+          await repository.putWordbookChunk(deviceId, bookId, uploadId, index, encryptedValue(body.envelope));
+          json(response, 200, { protocol: WORDBOOK_PROTOCOL, stored: true });
+          return;
+        }
+        if (request.method === "POST" && commit) {
+          const body = await readJson(request, MAX_WORDBOOK_BODY_BYTES);
+          if (body.protocol !== WORDBOOK_PROTOCOL || !Number.isSafeInteger(body.baseVersion) || body.baseVersion < 0 || body.baseVersion >= 2147483647 ||
+              !Number.isInteger(body.chunkCount) || body.chunkCount < 0 || body.chunkCount > MAX_WORDBOOK_CHUNKS) {
+            throw wordbookError("词库提交格式无效", 400);
+          }
+          const published = await repository.commitWordbook(deviceId, bookId, uploadId, {
+            baseVersion: body.baseVersion, chunkCount: body.chunkCount, manifest: encryptedValue(body.manifest)
+          });
+          json(response, 200, { protocol: WORDBOOK_PROTOCOL, ...published });
+          return;
+        }
+        json(response, 404, { error: "接口不存在" });
         return;
       }
 
@@ -410,4 +563,4 @@ export function createHandler({ repository, registrationKey, longPollMs = 25_000
   };
 }
 
-export { PROTOCOL, sha256 };
+export { PROTOCOL, WORDBOOK_PROTOCOL, sha256 };

@@ -29,6 +29,18 @@ public final class CryptoBox {
         ));
     }
 
+    public static JSONObject encrypt(String plaintext, String encodedKey) throws Exception {
+        byte[] key = decode(encodedKey);
+        if (key.length != 32) throw new IllegalArgumentException("Invalid encryption key");
+        byte[] nonce = new byte[12];
+        new SecureRandom().nextBytes(nonce);
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, nonce));
+        byte[] ciphertext = cipher.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));
+        return new JSONObject().put("algorithm", "A256GCM")
+                .put("nonce", encode(nonce)).put("ciphertext", encode(ciphertext));
+    }
+
     public static String decryptToString(
             String algorithm,
             String encodedNonce,

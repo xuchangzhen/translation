@@ -43,6 +43,7 @@ const {
   enrichTranslation,
   listOllamaModels,
   testProvider,
+  compatibleModels,
   translateTechnicalText,
   translateText,
   warmOllama
@@ -623,12 +624,37 @@ function memorySyncConfigured(settings = store?.data) {
   );
 }
 
+function requiresAndroidMemoryRecovery() {
+  return Boolean(
+    store?.data?.androidMemoryPairingEncrypted &&
+    !store.androidMemoryPairing()
+  );
+}
+
+function storedAndroidMemoryPairing() {
+  const pairingUri = store.androidMemoryPairing();
+  if (pairingUri) return pairingUri;
+  if (requiresAndroidMemoryRecovery()) {
+    throw new Error(
+      "本机无法读取原有同步凭据。请在安卓单词记忆的“连接桌面翻译器”页面复制配对信息，再粘贴到此处恢复。"
+    );
+  }
+  throw new Error("尚未创建或加入同步空间");
+}
+
 function sendMemorySyncStatus(patch = {}) {
+  const recoveryMessage = requiresAndroidMemoryRecovery()
+    ? {
+        state: "waiting",
+        message: "本机无法读取原有同步凭据；待发送词条已保留，请从安卓端复制配对信息恢复。"
+      }
+    : {};
   const payload = {
     ...memoryOutbox.status(),
     configured: memorySyncConfigured(),
     state: "idle",
     message: "",
+    ...recoveryMessage,
     ...patch
   };
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1401,12 +1427,17 @@ function registerIpc() {
     scheduleDesktopPresence(100);
     return { settings, shortcutFailures };
   });
-  ipcMain.handle("settings:clear-api-key", () =>
-    store.update({ clearApiKey: true })
+  ipcMain.handle("settings:clear-api-key", (_event, provider) =>
+    store.update({ clearApiKey: true, apiKeyProvider: provider })
   );
   ipcMain.handle("clipboard:write", (_event, text) => {
-    clipboard.writeText(String(text || ""));
-    return true;
+    const value = String(text || "");
+    if (!value) return false;
+    clipboard.writeText(value);
+    // Some clipboard managers can reject or immediately replace a write. Read
+    // back so a sensitive one-time join link is never reported as copied when
+    // it was not actually accepted by the system clipboard.
+    return clipboard.readText() === value;
   });
   ipcMain.handle("memory:sync-status", () => sendMemorySyncStatus());
   ipcMain.handle("memory:desktop-clients", () => refreshDesktopPresence());
@@ -1423,7 +1454,7 @@ function registerIpc() {
   });
   ipcMain.handle("memory:test-android", (_event, pairingValue) => {
     const provided = String(pairingValue || "").trim();
-    return testAndroidMemoryConnection(provided || store.androidMemoryPairing());
+    return testAndroidMemoryConnection(provided || storedAndroidMemoryPairing());
   });
   ipcMain.handle("memory:provision-android", async (_event, payload) => {
     const provisioned = await provisionAndroidMemoryConnection(
@@ -1440,8 +1471,7 @@ function registerIpc() {
     return { settings, sync, pairingUri: provisioned.pairingUri };
   });
   ipcMain.handle("memory:get-phone-pairing", () => {
-    const pairingUri = store.androidMemoryPairing();
-    if (!pairingUri) throw new Error("尚未创建安卓连接");
+    const pairingUri = storedAndroidMemoryPairing();
     const pairing = parsePairing(pairingUri);
     if (!pairing.readToken) {
       throw new Error("当前连接由旧版手机创建，请解除后使用“一键连接手机”重新创建");
@@ -1449,9 +1479,7 @@ function registerIpc() {
     return pairingUri;
   });
   ipcMain.handle("memory:create-desktop-join", () => {
-    const pairingUri = store.androidMemoryPairing();
-    if (!pairingUri) throw new Error("请先创建或加入同步空间");
-    return createDesktopJoinLink(pairingUri, os.hostname());
+    return createDesktopJoinLink(storedAndroidMemoryPairing(), os.hostname());
   });
   ipcMain.handle("memory:claim-desktop-join", async (_event, joinLink) => {
     const claimed = await claimDesktopJoinLink(joinLink);
@@ -1482,6 +1510,10 @@ function registerIpc() {
   ipcMain.handle("codex:models", (_event, patch) =>
     codexModels({ ...store.data, ...(patch || {}) })
   );
+  ipcMain.handle("compatible:models", (_event, patch) => {
+    const settings = { ...store.data, ...(patch || {}) };
+    return compatibleModels(settings, typeof patch?.apiKey === "string" && patch.apiKey.trim() ? patch.apiKey.trim() : store.apiKey("compatible"));
+  });
   ipcMain.handle("ollama:models", (_event, patch) =>
     listOllamaModels({ ...store.data, ...(patch || {}) })
   );
@@ -1529,7 +1561,7 @@ function registerIpc() {
     const result = await translateText(
       payload?.text,
       settings,
-      store.apiKey()
+      store.apiKey(settings.provider)
     );
     cacheWrite(translationCache, key, result, 120);
     return result;
@@ -1543,21 +1575,21 @@ function registerIpc() {
       payload?.text,
       payload?.translation,
       settings,
-      store.apiKey()
+      store.apiKey(settings.provider)
     );
     cacheWrite(enrichmentCache, key, result, 80);
     return result;
   });
   ipcMain.handle("translation:translate-technical", async (_event, payload) => {
     const settings = { ...store.data, ...(payload?.overrides || {}) };
-    return translateTechnicalText(payload?.text, settings, store.apiKey());
+    return translateTechnicalText(payload?.text, settings, store.apiKey(settings.provider));
   });
   ipcMain.handle("translation:test-provider", async (_event, patch) => {
     const settings = { ...store.data, ...(patch || {}) };
     const candidateKey =
       typeof patch?.apiKey === "string" && patch.apiKey.trim()
         ? patch.apiKey.trim()
-        : store.apiKey();
+        : store.apiKey(settings.provider);
     return testProvider(settings, candidateKey);
   });
   ipcMain.handle("capture:start", async () => {

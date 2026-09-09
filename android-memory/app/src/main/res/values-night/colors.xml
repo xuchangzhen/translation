@@ -4,4 +4,5 @@
     <color name="surface">#09080E</color>
     <color name="white">#FFFFFF</color>
     <color name="navigation">#100D17</color>
+    <color name="launcher_icon_background">#A878FF</color>
 </resources>

@@ -6,7 +6,7 @@ contextBridge.exposeInMainWorld("lingua", {
   setThemeMode: (mode) => ipcRenderer.invoke("theme:set", mode),
   setShortcutRecording: (active) =>
     ipcRenderer.invoke("shortcut:recording", active),
-  clearApiKey: () => ipcRenderer.invoke("settings:clear-api-key"),
+  clearApiKey: (provider) => ipcRenderer.invoke("settings:clear-api-key", provider),
   copyText: (text) => ipcRenderer.invoke("clipboard:write", text),
   getMemorySyncStatus: () => ipcRenderer.invoke("memory:sync-status"),
   getDesktopClients: () => ipcRenderer.invoke("memory:desktop-clients"),
@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld("lingua", {
     ipcRenderer.invoke("memory:clear-pairing"),
   codexLogin: (settings = {}) => ipcRenderer.invoke("codex:login", settings),
   codexStatus: (settings = {}) => ipcRenderer.invoke("codex:status", settings),
+  compatibleModels: (settings = {}) => ipcRenderer.invoke("compatible:models", settings),
   codexModels: (settings = {}) => ipcRenderer.invoke("codex:models", settings),
   ollamaModels: (settings = {}) => ipcRenderer.invoke("ollama:models", settings),
   synthesizeSpeech: (text, language) =>

@@ -5,7 +5,7 @@ const path = require("node:path");
 const { safeStorage } = require("electron");
 
 const DEFAULT_SETTINGS = Object.freeze({
-  settingsSchemaVersion: 6,
+  settingsSchemaVersion: 7,
   themeMode: "system",
   syncClientId: "",
   syncClientName: os.hostname(),
@@ -38,6 +38,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   popupAlwaysOnTop: false,
   androidMemorySyncEnabled: true,
   androidMemoryPairingEncrypted: "",
+  apiKeysEncrypted: Object.freeze({}),
   apiKeyEncrypted: ""
 });
 
@@ -46,7 +47,7 @@ class SettingsStore {
     this.filePath = path.join(userDataPath, "settings.json");
     this.backupFilePath = path.join(userDataPath, "settings.backup.json");
     this.data = this.read();
-    let changed = false;
+    let changed = Boolean(this.needsMigration);
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(this.data.syncClientId || "")) {
       this.data.syncClientId = crypto.randomUUID();
       changed = true;
@@ -70,12 +71,18 @@ class SettingsStore {
       throw new Error("设置文件内容无效");
     }
     const migrated = { ...parsed };
+    this.needsMigration = Number(parsed.settingsSchemaVersion || 0) < DEFAULT_SETTINGS.settingsSchemaVersion;
     if (
       Number(migrated.settingsSchemaVersion || 0) < 2 &&
       process.platform === "win32" &&
       migrated.speechProvider === "system"
     ) {
       migrated.speechProvider = "mambo";
+    }
+    migrated.apiKeysEncrypted = { ...(migrated.apiKeysEncrypted || {}) };
+    if (migrated.apiKeyEncrypted && ["google", "openai", "compatible"].includes(migrated.provider)) {
+      migrated.apiKeysEncrypted[migrated.provider] ||= migrated.apiKeyEncrypted;
+      migrated.apiKeyEncrypted = "";
     }
     migrated.settingsSchemaVersion = DEFAULT_SETTINGS.settingsSchemaVersion;
     return { ...DEFAULT_SETTINGS, ...migrated };
@@ -131,17 +138,28 @@ class SettingsStore {
   }
 
   publicValue() {
-    const { apiKeyEncrypted, androidMemoryPairingEncrypted, ...visible } = this.data;
+    const { apiKeyEncrypted, apiKeysEncrypted, androidMemoryPairingEncrypted, ...visible } = this.data;
+    const androidMemoryPairingAvailable = Boolean(this.androidMemoryPairing());
     return {
       ...visible,
-      apiKeyConfigured: Boolean(apiKeyEncrypted),
+      apiKeyConfigured: Boolean(apiKeysEncrypted?.[this.data.provider]),
+      apiKeyConfiguredByProvider: Object.fromEntries(["google", "openai", "compatible"].map(provider => [provider, Boolean(apiKeysEncrypted?.[provider])])),
       apiKey: "",
-      androidMemoryPaired: Boolean(androidMemoryPairingEncrypted),
+      // Ciphertext may remain after an OS keychain/DPAPI reset even though it
+      // can no longer be decrypted. The UI must distinguish that from a live
+      // connection so it can offer recovery rather than reporting success.
+      androidMemoryPaired: androidMemoryPairingAvailable,
+      androidMemoryPairingUnavailable: Boolean(
+        androidMemoryPairingEncrypted && !androidMemoryPairingAvailable
+      ),
       androidMemoryPairing: ""
     };
   }
 
   update(patch) {
+    if (Object.hasOwn(patch, "compatibleBaseUrl")) {
+      patch = { ...patch, compatibleBaseUrl: require("./compatible.cjs").compatibleBaseUrl(patch.compatibleBaseUrl) };
+    }
     const allowed = [
       "provider",
       "themeMode",
@@ -171,24 +189,27 @@ class SettingsStore {
       "androidMemorySyncEnabled"
     ];
 
+    const next = { ...this.data };
     for (const key of allowed) {
       if (Object.hasOwn(patch, key) && typeof patch[key] !== "undefined") {
-        this.data[key] = patch[key];
+        next[key] = patch[key];
       }
     }
 
-    if (!["system", "light", "dark"].includes(this.data.themeMode)) {
-      this.data.themeMode = "system";
+    if (!["system", "light", "dark"].includes(next.themeMode)) {
+      next.themeMode = "system";
     }
-    this.data.syncClientName = String(
-      this.data.syncClientName || os.hostname() || "这台电脑"
+    next.syncClientName = String(
+      next.syncClientName || os.hostname() || "这台电脑"
     ).trim().slice(0, 80) || "这台电脑";
 
     if (typeof patch.apiKey === "string" && patch.apiKey.trim()) {
       if (!safeStorage.isEncryptionAvailable()) {
         throw new Error("当前系统无法安全保存 API Key");
       }
-      this.data.apiKeyEncrypted = safeStorage
+      if (!["google", "openai", "compatible"].includes(next.provider)) throw new Error("当前服务不使用 API Key");
+      next.apiKeysEncrypted = { ...next.apiKeysEncrypted };
+      next.apiKeysEncrypted[next.provider] = safeStorage
         .encryptString(patch.apiKey.trim())
         .toString("base64");
     }
@@ -200,28 +221,34 @@ class SettingsStore {
       if (!safeStorage.isEncryptionAvailable()) {
         throw new Error("当前系统无法安全保存安卓配对凭据");
       }
-      this.data.androidMemoryPairingEncrypted = safeStorage
+      next.androidMemoryPairingEncrypted = safeStorage
         .encryptString(patch.androidMemoryPairing.trim())
         .toString("base64");
     }
 
     if (patch.clearAndroidMemoryPairing === true) {
-      this.data.androidMemoryPairingEncrypted = "";
+      next.androidMemoryPairingEncrypted = "";
     }
 
     if (patch.clearApiKey === true) {
-      this.data.apiKeyEncrypted = "";
+      const provider = patch.apiKeyProvider || next.provider;
+      next.apiKeysEncrypted = { ...next.apiKeysEncrypted };
+      delete next.apiKeysEncrypted[provider];
     }
 
-    this.save();
+    const previous = this.data;
+    this.data = next;
+    try { this.save(); }
+    catch (error) { this.data = previous; throw error; }
     return this.publicValue();
   }
 
-  apiKey() {
-    if (!this.data.apiKeyEncrypted) return "";
+  apiKey(provider = this.data.provider) {
+    const encrypted = this.data.apiKeysEncrypted?.[provider];
+    if (!encrypted) return "";
     try {
       return safeStorage.decryptString(
-        Buffer.from(this.data.apiKeyEncrypted, "base64")
+        Buffer.from(encrypted, "base64")
       );
     } catch {
       return "";

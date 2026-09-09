@@ -12,9 +12,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 public final class CloudApi {
     private static final int MAX_RESPONSE_BYTES = 1024 * 1024;
+    private static final String WORDBOOK_PROTOCOL = "linguabridge-wordbooks/1";
 
     private CloudApi() {}
 
@@ -109,6 +112,103 @@ public final class CloudApi {
                 12_000
         );
         if (!response.optBoolean("acknowledged")) throw new IllegalStateException("服务器未确认批次");
+    }
+
+    public static JSONArray listWordbooks(SyncConfig config) throws Exception {
+        JSONObject response = request(config.serverUrl + "/v1/devices/" + config.deviceId + "/wordbooks", "GET", null,
+                "Authorization", "Bearer " + config.readToken, 20_000);
+        requireWordbookProtocol(response);
+        return response.optJSONArray("wordbooks") == null ? new JSONArray() : response.getJSONArray("wordbooks");
+    }
+
+    public static JSONObject uploadWordbook(SyncConfig config, MemoryDb.CloudSnapshot snapshot) throws Exception {
+        JSONArray encodedItems = snapshot.items;
+        String uploadId = UUID.randomUUID().toString();
+        List<JSONArray> chunks = wordbookChunks(encodedItems);
+        int chunkCount = chunks.size();
+        for (int start = 0; start < chunks.size(); start++) {
+            JSONArray chunk = chunks.get(start);
+            JSONObject body = new JSONObject().put("protocol", WORDBOOK_PROTOCOL)
+                    .put("envelope", CryptoBox.encrypt(chunk.toString(), config.contentKey));
+            request(config.serverUrl + "/v1/devices/" + config.deviceId + "/wordbooks/" + snapshot.id + "/uploads/" + uploadId + "/chunks/" + start,
+                    "PUT", body, "Authorization", "Bearer " + config.readToken, 30_000);
+        }
+        JSONObject manifest = new JSONObject().put("name", snapshot.name).put("itemCount", encodedItems.length());
+        JSONObject commit = new JSONObject().put("protocol", WORDBOOK_PROTOCOL)
+                .put("baseVersion", snapshot.version).put("chunkCount", chunkCount)
+                .put("manifest", CryptoBox.encrypt(manifest.toString(), config.contentKey));
+        JSONObject response = request(config.serverUrl + "/v1/devices/" + config.deviceId + "/wordbooks/" + snapshot.id + "/uploads/" + uploadId + "/commit",
+                "POST", commit, "Authorization", "Bearer " + config.readToken, 30_000);
+        requireWordbookProtocol(response);
+        return response;
+    }
+
+    static List<JSONArray> wordbookChunks(JSONArray encodedItems) throws Exception {
+        if (encodedItems.length() > WordbookImporter.MAX_ITEMS) throw new IllegalArgumentException("词库最多同步 100000 条。");
+        List<JSONArray> chunks = new ArrayList<>();
+        JSONArray current = new JSONArray();
+        int currentBytes = 2;
+        for (int i = 0; i < encodedItems.length(); i++) {
+            JSONObject item = encodedItems.getJSONObject(i);
+            int itemBytes = item.toString().getBytes(StandardCharsets.UTF_8).length;
+            if (itemBytes + 2 > 256 * 1024) throw new IllegalArgumentException("单条词汇内容过长，无法同步。");
+            int separator = current.length() > 0 ? 1 : 0;
+            if (currentBytes + separator + itemBytes > 256 * 1024) {
+                chunks.add(current);
+                current = new JSONArray();
+                currentBytes = 2;
+                separator = 0;
+            }
+            current.put(item);
+            currentBytes += separator + itemBytes;
+        }
+        if (current.length() > 0 || encodedItems.length() == 0) chunks.add(current);
+        if (chunks.size() > 1024) throw new IllegalArgumentException("词库过大，无法同步。");
+        return chunks;
+    }
+
+    public static final class DownloadedWordbook {
+        public final String id, name;
+        public final long version;
+        public final JSONArray items;
+        DownloadedWordbook(String id, String name, long version, JSONArray items) {
+            this.id = id; this.name = name; this.version = version; this.items = items;
+        }
+    }
+
+    public static DownloadedWordbook downloadWordbook(SyncConfig config, JSONObject summary) throws Exception {
+        String id = summary.optString("id");
+        String uploadId = summary.optString("uploadId");
+        long version = summary.optLong("version", 0);
+        int chunkCount = summary.optInt("chunkCount", -1);
+        JSONObject manifestEnvelope = summary.optJSONObject("manifest");
+        UUID.fromString(id);
+        UUID.fromString(uploadId);
+        if (version < 1 || chunkCount < 0 || chunkCount > 1024 || manifestEnvelope == null) throw new IllegalStateException("云端词库清单无效");
+        JSONObject manifest = new JSONObject(CryptoBox.decryptToString(manifestEnvelope.optString("algorithm"), manifestEnvelope.optString("nonce"), manifestEnvelope.optString("ciphertext"), config.contentKey));
+        String name = manifest.optString("name", "云端词库");
+        int itemCount = manifest.optInt("itemCount", -1);
+        if (itemCount < 0 || itemCount > WordbookImporter.MAX_ITEMS) throw new IllegalStateException("云端词库条数无效");
+        JSONArray items = new JSONArray();
+        long totalBytes = 0;
+        for (int index = 0; index < chunkCount; index++) {
+            JSONObject response = request(config.serverUrl + "/v1/devices/" + config.deviceId + "/wordbooks/" + id + "/uploads/" + uploadId + "/chunks/" + index,
+                    "GET", null, "Authorization", "Bearer " + config.readToken, 30_000);
+            requireWordbookProtocol(response);
+            JSONObject envelope = response.getJSONObject("envelope");
+            String plaintext = CryptoBox.decryptToString(envelope.optString("algorithm"), envelope.optString("nonce"), envelope.optString("ciphertext"), config.contentKey);
+            totalBytes += plaintext.getBytes(StandardCharsets.UTF_8).length;
+            if (totalBytes > WordbookImporter.MAX_BYTES) throw new IllegalStateException("云端词库过大");
+            JSONArray chunk = new JSONArray(plaintext);
+            if (items.length() + chunk.length() > itemCount) throw new IllegalStateException("云端词库条数不匹配");
+            for (int i = 0; i < chunk.length(); i++) items.put(chunk.get(i));
+        }
+        if (items.length() != itemCount) throw new IllegalStateException("云端词库条数不匹配");
+        return new DownloadedWordbook(id, name, version, items);
+    }
+
+    private static void requireWordbookProtocol(JSONObject response) {
+        if (!WORDBOOK_PROTOCOL.equals(response.optString("protocol"))) throw new IllegalStateException("云端词库协议版本不兼容");
     }
 
     public static DesktopPresence desktopPresence(SyncConfig config) throws Exception {

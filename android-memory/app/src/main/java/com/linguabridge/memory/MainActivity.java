@@ -47,6 +47,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity implements TextToSpeech.OnInitListener {
+    private static final int CARD_CORNER_RADIUS_DP = 24;
+    private static final int STAT_CARD_CORNER_RADIUS_DP = 22;
+    private static final int INSET_SURFACE_CORNER_RADIUS_DP = 14;
+    private static final int PILL_CORNER_RADIUS_DP = 12;
+
     private int BLUE;
     private int CORAL;
     private int LILAC;
@@ -61,6 +66,10 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
 
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private MemoryDb db;
+    private WordbookImportUi wordbookImport;
+    private long libraryWordbookId = 0, reviewWordbookId = 0;
+    private String libraryWordbookName = "全部";
+    private int libraryOffset = 0;
     private SecureStore secureStore;
     private FrameLayout content;
     private FrameLayout rootHost;
@@ -85,6 +94,9 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         super.onCreate(savedInstanceState);
         applyPalette();
         db = new MemoryDb(this);
+        wordbookImport = new WordbookImportUi(this, (id, name) -> {
+            libraryWordbookId = id; libraryWordbookName = name; libraryOffset = 0; showLibrary();
+        });
         secureStore = new SecureStore(this);
         textToSpeech = new TextToSpeech(this, this);
         ReviewNotifications.createChannels(this);
@@ -106,7 +118,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         super.onNewIntent(intent);
         setIntent(intent);
         if (handlePairingIntent(intent)) showConnect();
-        else if (intent.getBooleanExtra("openReview", false)) showReview();
+        else if (intent.getBooleanExtra("openReview", false)) { reviewWordbookId = 0; showReview(); }
     }
 
     private boolean handlePairingIntent(Intent intent) {
@@ -144,6 +156,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
 
     @Override
     protected void onDestroy() {
+        wordbookImport.destroy();
         unregisterReceiver(syncReceiver);
         io.shutdownNow();
         if (textToSpeech != null) textToSpeech.shutdown();
@@ -216,8 +229,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                 0
         );
         theme.setCompoundDrawableTintList(ColorStateList.valueOf(BLUE));
-        theme.setStateListAnimator(null);
-        theme.setElevation(0);
+        applyFlatButtonBehavior(theme);
         theme.setContentDescription(darkMode ? "切换到浅色模式" : "切换到深色模式");
         theme.setOnClickListener(view -> transitionTheme(view, darkMode ? "light" : "dark"));
         theme.setOnLongClickListener(view -> {
@@ -319,8 +331,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         button.setBackgroundColor(Color.TRANSPARENT);
         button.setCompoundDrawablesRelativeWithIntrinsicBounds(0, iconResource, 0, 0);
         button.setCompoundDrawablePadding(dp(2));
-        button.setStateListAnimator(null);
-        button.setElevation(0);
+        applyFlatButtonBehavior(button);
         button.setMinWidth(0);
         button.setMinHeight(0);
         button.setPadding(dp(8), 0, dp(8), 0);
@@ -351,7 +362,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         LinearLayout body = pageBody();
         body.addView(eyebrow("TODAY"));
         body.addView(title("今天要记住什么？", 29));
-        body.addView(subtitle("桌面翻译器会自动送来新内容；复习进度只保存在这台手机。"));
+        body.addView(subtitle("桌面翻译器会自动送来新内容；自定义词库可加密同步到已连接设备。"));
 
         LinearLayout statsRow = new LinearLayout(this);
         statsRow.setPadding(0, dp(18), 0, dp(18));
@@ -388,7 +399,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
 
         Button start = primaryButton(stats.due > 0 ? "开始复习 · " + stats.due : "今天已完成");
         start.setEnabled(stats.due > 0);
-        start.setOnClickListener(view -> showReview());
+        start.setOnClickListener(view -> { reviewWordbookId = 0; showReview(); });
         body.addView(start, fullHeight(52));
 
         SyncConfig syncConfig = secureStore.load();
@@ -429,30 +440,71 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         setPage(body);
     }
 
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == WordbookImportUi.PICK_FILE && resultCode == RESULT_OK && data != null && data.getData() != null) {
+            wordbookImport.selected(data.getData());
+        }
+    }
+
     private void showLibrary() {
         selectPage("library");
         LinearLayout body = pageBody();
         MemoryDb.Stats stats = db.stats(System.currentTimeMillis());
         body.addView(eyebrow("LIBRARY"));
         body.addView(title("我的词库", 29));
-        body.addView(subtitle("共 " + stats.total + " 条；技术术语会保留定义和原句语境。"));
-        List<MemoryCard> cards = db.recent(60);
-        if (cards.isEmpty()) {
-            LinearLayout empty = card();
-            TextView emptyTitle = label("还没有学习内容", 17, INK, Typeface.BOLD);
-            emptyTitle.setGravity(Gravity.CENTER);
-            TextView emptyText = label("连接桌面端后，翻译完成的单词和句子会自动出现。", 12, MUTED, Typeface.NORMAL);
-            emptyText.setGravity(Gravity.CENTER);
-            emptyText.setPadding(0, dp(8), 0, 0);
-            empty.addView(emptyTitle);
-            empty.addView(emptyText);
-            LinearLayout.LayoutParams params = fullWrap();
-            params.topMargin = dp(22);
-            body.addView(empty, params);
-        } else {
-            for (MemoryCard memoryCard : cards) body.addView(libraryRow(memoryCard));
+        Button importButton = linkButton("导入词库");
+        importButton.setOnClickListener(view -> wordbookImport.choose()); body.addView(importButton);
+        Button all = linkButton("全部 · " + stats.total + " 词 · 待复习 " + stats.due + " · 新词 " + stats.fresh);
+        all.setOnClickListener(view -> { libraryWordbookId = 0; libraryWordbookName = "全部"; libraryOffset = 0; showLibrary(); }); body.addView(all);
+        for (Wordbook book : db.wordbooks(System.currentTimeMillis())) {
+            Button select = linkButton(book.name + " · " + book.total + " 词 · 待复习 " + book.due + " · 新词 " + book.fresh);
+            select.setOnClickListener(view -> { libraryWordbookId = book.id; libraryWordbookName = book.name; libraryOffset = 0; showLibrary(); }); body.addView(select);
+        }
+        body.addView(title(libraryWordbookName, 22));
+        Button study = primaryButton("开始学习 / 开始复习");
+        study.setOnClickListener(view -> { reviewWordbookId = libraryWordbookId; showReview(); }); body.addView(study);
+        if (libraryWordbookId > 1) {
+            Button sync = linkButton("同步到已连接的其他设备");
+            sync.setOnClickListener(view -> uploadSelectedWordbook(sync));
+            body.addView(sync);
+        }
+        List<MemoryCard> cards = db.recent(61, libraryWordbookId, libraryOffset);
+        if (cards.isEmpty()) body.addView(subtitle("这里还没有词条，可以导入本地词库或连接桌面自动同步。"));
+        for (MemoryCard memoryCard : cards.subList(0, Math.min(60, cards.size()))) body.addView(libraryRow(memoryCard));
+        if (libraryOffset > 0) {
+            Button previous = linkButton("上一页");
+            previous.setOnClickListener(view -> { libraryOffset = Math.max(0, libraryOffset - 60); showLibrary(); }); body.addView(previous);
+        }
+        if (cards.size() > 60) {
+            Button next = linkButton("下一页");
+            next.setOnClickListener(view -> { libraryOffset += 60; showLibrary(); }); body.addView(next);
         }
         setPage(body);
+    }
+
+    private void uploadSelectedWordbook(Button button) {
+        SyncConfig config = secureStore.load();
+        if (config == null) {
+            Toast.makeText(this, "请先在“连接桌面”中连接同步空间", Toast.LENGTH_LONG).show();
+            return;
+        }
+        button.setEnabled(false);
+        button.setText("正在加密并同步…");
+        io.execute(() -> {
+            try (MemoryDb local = new MemoryDb(getApplicationContext())) {
+                MemoryDb.CloudSnapshot snapshot = local.prepareWordbookSync(libraryWordbookId, config.deviceId);
+                org.json.JSONObject result = CloudApi.uploadWordbook(config, snapshot);
+                long version = result.optLong("version", snapshot.version + 1);
+                local.markWordbookPublished(snapshot, version);
+                runOnUiThread(() -> Toast.makeText(this, "词库已加密同步到其他设备（版本 " + version + "）", Toast.LENGTH_LONG).show());
+            } catch (Exception error) {
+                runOnUiThread(() -> Toast.makeText(this, "词库同步失败：" + error.getMessage(), Toast.LENGTH_LONG).show());
+            } finally {
+                runOnUiThread(() -> { if (!isFinishing()) { button.setEnabled(true); button.setText("同步到已连接的其他设备"); } });
+            }
+        });
     }
 
     private View libraryRow(MemoryCard memoryCard) {
@@ -466,7 +518,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         front.setPadding(0, dp(5), 0, 0);
         row.addView(front);
         if (!memoryCard.phonetic.isEmpty()) {
-            TextView ipa = label(memoryCard.phonetic, 15, LILAC, Typeface.NORMAL);
+            TextView ipa = label(IpaFormatter.formatIpaForDisplay(memoryCard.phonetic), 15, LILAC, Typeface.NORMAL);
             ipa.setTypeface(Typeface.create("serif", Typeface.NORMAL));
             row.addView(ipa);
         }
@@ -479,13 +531,15 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
             note.setPadding(0, dp(9), 0, 0);
             row.addView(note);
         }
+        if (!memoryCard.category.isEmpty()) row.addView(label(memoryCard.category, 11, BLUE, Typeface.NORMAL));
+        if (!memoryCard.context.isEmpty()) row.addView(label(memoryCard.context, 12, MUTED, Typeface.NORMAL));
         return row;
     }
 
     private void showReview() {
         selectPage("home");
         currentPage = "review";
-        MemoryCard memoryCard = db.nextDue(System.currentTimeMillis());
+        MemoryCard memoryCard = db.nextDue(System.currentTimeMillis(), reviewWordbookId);
         if (memoryCard == null) {
             LinearLayout body = pageBody();
             body.setGravity(Gravity.CENTER_HORIZONTAL);
@@ -525,7 +579,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         front.setPadding(0, dp(15), 0, 0);
         reviewCard.addView(front);
         if (!memoryCard.phonetic.isEmpty()) {
-            TextView ipa = label(memoryCard.phonetic, 18, LILAC, Typeface.NORMAL);
+            TextView ipa = label(IpaFormatter.formatIpaForDisplay(memoryCard.phonetic), 18, LILAC, Typeface.NORMAL);
             ipa.setTypeface(Typeface.create("serif", Typeface.NORMAL));
             ipa.setPadding(0, dp(8), 0, 0);
             reviewCard.addView(ipa);
@@ -544,6 +598,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         answer.setPadding(0, dp(22), 0, 0);
         answer.addView(label("答案", 10, MUTED, Typeface.BOLD));
         answer.addView(label(memoryCard.back, 20, INK, Typeface.BOLD));
+        if (!memoryCard.category.isEmpty()) answer.addView(label(memoryCard.category, 12, BLUE, Typeface.NORMAL));
         if (!memoryCard.context.isEmpty()) {
             answer.addView(sectionLabel("原句语境"));
             answer.addView(label(memoryCard.context, 12, MUTED, Typeface.NORMAL));
@@ -591,6 +646,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         button.setAllCaps(false);
         button.setTextColor(color);
         button.setBackground(rounded(CARD_RAISED, 11, LINE));
+        applyFlatButtonBehavior(button);
         button.setOnClickListener(view -> {
             view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
             db.review(memoryCard.id, rating, System.currentTimeMillis());
@@ -698,7 +754,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         LinearLayout privacy = card();
         privacy.addView(label("零知识中继", 13, INK, Typeface.BOLD));
         privacy.addView(label(
-                "词条在桌面端加密，在手机端解密。服务器只保存待领取密文，确认收到后删除；无法看到单词、译文和技术语境。",
+                "桌面翻译和自定义词库都会端到端加密。服务器只保存密文版本，不会看到单词、译文和技术语境。",
                 11,
                 MUTED,
                 Typeface.NORMAL
@@ -770,7 +826,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
             LinearLayout row = new LinearLayout(this);
             row.setGravity(Gravity.CENTER_VERTICAL);
             row.setPadding(dp(12), dp(10), dp(12), dp(10));
-            row.setBackground(rounded(CARD_RAISED, 14, LINE));
+            applyInsetSurfaceStyle(row, INSET_SURFACE_CORNER_RADIUS_DP);
             View dot = new View(this);
             dot.setBackground(rounded(client.online ? MINT : MUTED, 4));
             row.addView(dot, new LinearLayout.LayoutParams(dp(7), dp(7)));
@@ -847,18 +903,14 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
     private LinearLayout card() {
         LinearLayout card = vertical(3);
         card.setPadding(dp(18), dp(17), dp(18), dp(17));
-        card.setBackground(gradient(new int[]{
-                darkMode ? Color.rgb(27, 23, 37) : Color.rgb(255, 254, 255),
-                CARD
-        }, 20, LINE));
-        card.setElevation(0);
+        applyCardStyle(card);
         return card;
     }
 
     private View statCard(String title, int value, String hint) {
         LinearLayout card = vertical(0);
         card.setPadding(dp(16), dp(14), dp(16), dp(14));
-        card.setBackground(rounded(darkMode ? Color.rgb(25, 21, 34) : Color.rgb(255, 254, 255), 18, LINE));
+        applyFlatSurfaceStyle(card, CARD, STAT_CARD_CORNER_RADIUS_DP);
         LinearLayout heading = new LinearLayout(this);
         heading.setGravity(Gravity.CENTER_VERTICAL);
         heading.addView(label(title, 10, MUTED, Typeface.BOLD), weighted());
@@ -890,15 +942,16 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         TextView pill = label(text, 9, color, Typeface.BOLD);
         pill.setGravity(Gravity.CENTER);
         pill.setPadding(dp(10), dp(5), dp(10), dp(5));
-        pill.setBackground(rounded(withAlpha(color, darkMode ? 36 : 22), 10,
+        pill.setBackground(rounded(withAlpha(color, darkMode ? 36 : 22), PILL_CORNER_RADIUS_DP,
                 withAlpha(color, darkMode ? 86 : 54)));
+        clearElevation(pill);
         return pill;
     }
 
     private TextView emptyPresence(String text) {
         TextView empty = label(text, 10, MUTED, Typeface.NORMAL);
         empty.setPadding(dp(12), dp(10), dp(12), dp(10));
-        empty.setBackground(rounded(CARD_RAISED, 13));
+        applyInsetSurfaceStyle(empty, 13);
         return empty;
     }
 
@@ -960,8 +1013,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         button.setTextColor(Color.WHITE);
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         button.setBackground(gradient(new int[]{Color.rgb(123, 69, 203), Color.rgb(181, 126, 255)}, 14));
-        button.setStateListAnimator(null);
-        button.setElevation(dp(3));
+        applyFlatButtonBehavior(button);
         return button;
     }
 
@@ -972,7 +1024,34 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         button.setAllCaps(false);
         button.setTextColor(BLUE);
         button.setBackgroundColor(Color.TRANSPARENT);
+        applyFlatButtonBehavior(button);
         return button;
+    }
+
+    private int surfaceStrokeColor() {
+        return LINE;
+    }
+
+    private void applyCardStyle(View view) {
+        applyFlatSurfaceStyle(view, CARD, CARD_CORNER_RADIUS_DP);
+    }
+
+    private void applyInsetSurfaceStyle(View view, int cornerRadius) {
+        applyFlatSurfaceStyle(view, CARD_RAISED, cornerRadius);
+    }
+
+    private void applyFlatSurfaceStyle(View view, int color, int cornerRadius) {
+        view.setBackground(rounded(color, cornerRadius, surfaceStrokeColor()));
+        clearElevation(view);
+    }
+
+    private void applyFlatButtonBehavior(Button button) {
+        clearElevation(button);
+    }
+
+    private void clearElevation(View view) {
+        view.setStateListAnimator(null);
+        view.setElevation(0f);
     }
 
     private TextView label(String text, int size, int color, int style) {

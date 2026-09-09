@@ -5,6 +5,8 @@ import java.util.List;
 
 public final class MemoryCard {
     public long id;
+    public long wordbookId;
+    public String category = "";
     public String syncKey = "";
     public String type = "word";
     public String front = "";

@@ -16,7 +16,7 @@ import java.util.Locale;
 
 public final class MemoryDb extends SQLiteOpenHelper {
     private static final String DATABASE_NAME = "word-memory.db";
-    private static final int DATABASE_VERSION = 1;
+    private static final int DATABASE_VERSION = 3;
 
     public MemoryDb(Context context) {
         super(context, DATABASE_NAME, null, DATABASE_VERSION);
@@ -24,9 +24,39 @@ public final class MemoryDb extends SQLiteOpenHelper {
 
     @Override
     public void onCreate(SQLiteDatabase db) {
+        createWordbooks(db);
+        createCards(db);
+        createWordbookSyncColumns(db);
+        db.execSQL("CREATE TABLE review_log (" +
+                "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+                "card_id INTEGER NOT NULL," +
+                "rating TEXT NOT NULL," +
+                "reviewed_at INTEGER NOT NULL," +
+                "next_due_at INTEGER NOT NULL" +
+                ")");
+        db.execSQL("CREATE INDEX review_log_date_idx ON review_log(reviewed_at)");
+    }
+
+    private void createWordbooks(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE wordbooks (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, source TEXT NOT NULL)");
+        db.execSQL("INSERT INTO wordbooks(id, name, source) VALUES (1, '桌面翻译', 'desktop')");
+    }
+
+    private void createWordbookSyncColumns(SQLiteDatabase db) {
+        db.execSQL("ALTER TABLE wordbooks ADD COLUMN cloud_id TEXT NOT NULL DEFAULT ''");
+        db.execSQL("ALTER TABLE wordbooks ADD COLUMN cloud_space TEXT NOT NULL DEFAULT ''");
+        db.execSQL("ALTER TABLE wordbooks ADD COLUMN cloud_version INTEGER NOT NULL DEFAULT 0");
+        db.execSQL("ALTER TABLE wordbooks ADD COLUMN local_revision INTEGER NOT NULL DEFAULT 0");
+        db.execSQL("ALTER TABLE wordbooks ADD COLUMN synced_revision INTEGER NOT NULL DEFAULT 0");
+        db.execSQL("CREATE UNIQUE INDEX wordbooks_cloud_idx ON wordbooks(cloud_space, cloud_id) WHERE cloud_id <> ''");
+    }
+
+    private void createCards(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE cards (" +
                 "id INTEGER PRIMARY KEY AUTOINCREMENT," +
-                "sync_key TEXT NOT NULL UNIQUE," +
+                "sync_key TEXT NOT NULL," +
+                "wordbook_id INTEGER NOT NULL DEFAULT 1 REFERENCES wordbooks(id)," +
+                "category TEXT NOT NULL DEFAULT ''," +
                 "external_id TEXT NOT NULL," +
                 "type TEXT NOT NULL," +
                 "front TEXT NOT NULL," +
@@ -47,22 +77,179 @@ public final class MemoryDb extends SQLiteOpenHelper {
                 "repetitions INTEGER NOT NULL DEFAULT 0," +
                 "lapses INTEGER NOT NULL DEFAULT 0," +
                 "last_reviewed_at INTEGER NOT NULL DEFAULT 0," +
-                "archived_at INTEGER NOT NULL DEFAULT 0" +
+                "archived_at INTEGER NOT NULL DEFAULT 0," +
+                "UNIQUE(wordbook_id, sync_key)" +
                 ")");
         db.execSQL("CREATE INDEX cards_due_idx ON cards(archived_at, due_at)");
-        db.execSQL("CREATE TABLE review_log (" +
-                "id INTEGER PRIMARY KEY AUTOINCREMENT," +
-                "card_id INTEGER NOT NULL," +
-                "rating TEXT NOT NULL," +
-                "reviewed_at INTEGER NOT NULL," +
-                "next_due_at INTEGER NOT NULL" +
-                ")");
-        db.execSQL("CREATE INDEX review_log_date_idx ON review_log(reviewed_at)");
+        db.execSQL("CREATE INDEX cards_wordbook_due_idx ON cards(wordbook_id, archived_at, due_at)");
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        throw new IllegalStateException("Unsupported database upgrade " + oldVersion + " -> " + newVersion);
+        if (oldVersion < 2) {
+            // SQLiteOpenHelper wraps this migration in a transaction. Preserve IDs
+            // and every v1 column, including review state; review_log stays in place.
+            createWordbooks(db);
+            db.execSQL("ALTER TABLE cards RENAME TO cards_v1");
+            db.execSQL("DROP INDEX cards_due_idx");
+            createCards(db);
+            try (Cursor old = db.rawQuery("SELECT * FROM cards_v1 LIMIT 0", null)) {
+                String columns = String.join(",", old.getColumnNames());
+                db.execSQL("INSERT INTO cards (" + columns + ") SELECT " + columns + " FROM cards_v1");
+            }
+            db.execSQL("DROP TABLE cards_v1");
+        }
+        if (oldVersion < 3) createWordbookSyncColumns(db);
+    }
+
+    public synchronized List<Wordbook> wordbooks(long now) {
+        List<Wordbook> result = new ArrayList<>();
+        try (Cursor cursor = getReadableDatabase().rawQuery(
+                "SELECT w.id, w.name, COUNT(c.id), COALESCE(SUM(c.due_at <= ?),0), COALESCE(SUM(c.state = 'new'),0) " +
+                "FROM wordbooks w LEFT JOIN cards c ON c.wordbook_id = w.id AND c.archived_at = 0 " +
+                "GROUP BY w.id ORDER BY w.id", new String[]{String.valueOf(now)})) {
+            while (cursor.moveToNext()) result.add(new Wordbook(cursor.getLong(0), cursor.getString(1), cursor.getInt(2), cursor.getInt(3), cursor.getInt(4)));
+        }
+        return result;
+    }
+
+    public synchronized WordbookImportResult importWordbook(ImportPreview preview, String requestedName) {
+        String name = requestedName.trim();
+        if (name.isEmpty() || name.length() > 100) throw new IllegalArgumentException("词库名称需要 1–100 个字符。");
+        SQLiteDatabase db = getWritableDatabase();
+        long now = System.currentTimeMillis(), wordbookId;
+        int added = 0, updated = 0;
+        db.beginTransaction();
+        try {
+            try (Cursor cursor = db.rawQuery("SELECT id, source FROM wordbooks WHERE name = ?", new String[]{name})) {
+                if (cursor.moveToFirst()) {
+                    if (!"local".equals(cursor.getString(1))) throw new IllegalArgumentException("“桌面翻译”用于自动同步，请为本地词库使用其他名称。");
+                    wordbookId = cursor.getLong(0);
+                } else {
+                    ContentValues book = new ContentValues(); book.put("name", name); book.put("source", "local");
+                    wordbookId = db.insertOrThrow("wordbooks", null, book);
+                }
+            }
+            for (WordbookImporter.Item item : preview.items) {
+                String key = WordbookImporter.normalizeFront(item.front);
+                ContentValues values = new ContentValues();
+                values.put("front", item.front); values.put("back", item.back); values.put("phonetic", item.phonetic);
+                values.put("technical_notes", item.definition.isEmpty() ? "[]" : new JSONArray().put(item.definition).toString());
+                values.put("category", item.category); values.put("context", item.context); values.put("content_updated_at", now);
+                int changed = db.update("cards", values, "wordbook_id = ? AND sync_key = ?", new String[]{String.valueOf(wordbookId), key});
+                if (changed > 0) { updated++; continue; }
+                values.put("wordbook_id", wordbookId); values.put("sync_key", key); values.put("external_id", "");
+                values.put("type", "word"); values.put("front_language", "en"); values.put("back_language", "zh-CN");
+                values.put("created_at", now); values.put("state", "new"); values.put("due_at", now);
+                db.insertOrThrow("cards", null, values); added++;
+            }
+            db.execSQL("UPDATE wordbooks SET local_revision = local_revision + 1 WHERE id = ?", new Object[]{wordbookId});
+            db.setTransactionSuccessful();
+        } finally { db.endTransaction(); }
+        return new WordbookImportResult(wordbookId, added, updated, preview.duplicates, preview.invalid);
+    }
+
+    public static final class CloudSnapshot {
+        public final long localId, version, revision;
+        public final String id, name, space;
+        public final JSONArray items;
+        CloudSnapshot(long localId, String id, String name, String space, long version, long revision, JSONArray items) {
+            this.localId = localId; this.id = id; this.name = name; this.space = space;
+            this.version = version; this.revision = revision; this.items = items;
+        }
+    }
+
+    public synchronized CloudSnapshot prepareWordbookSync(long id, String space) throws Exception {
+        SQLiteDatabase database = getWritableDatabase();
+        database.beginTransaction();
+        try (Cursor book = database.rawQuery("SELECT name,source,cloud_id,cloud_space,cloud_version,local_revision FROM wordbooks WHERE id = ?", new String[]{String.valueOf(id)})) {
+            if (!book.moveToFirst() || !"local".equals(book.getString(1))) throw new IllegalArgumentException("请选择自定义词库进行同步。");
+            String cloudId = book.getString(2);
+            if (!book.getString(3).isEmpty() && !space.equals(book.getString(3))) throw new IllegalArgumentException("此词库属于另一个同步空间，请先连接原同步空间。");
+            if (cloudId.isEmpty()) {
+                cloudId = java.util.UUID.randomUUID().toString();
+                ContentValues values = new ContentValues(); values.put("cloud_id", cloudId); values.put("cloud_space", space);
+                database.update("wordbooks", values, "id = ?", new String[]{String.valueOf(id)});
+            }
+            JSONArray items = new JSONArray();
+            try (Cursor cards = database.rawQuery("SELECT front,back,phonetic,technical_notes,category,context FROM cards WHERE wordbook_id = ? AND archived_at = 0 ORDER BY id", new String[]{String.valueOf(id)})) {
+                while (cards.moveToNext()) {
+                    JSONArray notes = new JSONArray(cards.getString(3));
+                    items.put(new JSONObject().put("front", cards.getString(0)).put("back", cards.getString(1))
+                            .put("phonetic", cards.getString(2)).put("definition", notes.optString(0, ""))
+                            .put("category", cards.getString(4)).put("context", cards.getString(5)));
+                }
+            }
+            CloudSnapshot snapshot = new CloudSnapshot(id, cloudId, book.getString(0), space, book.getLong(4), book.getLong(5), items);
+            database.setTransactionSuccessful();
+            return snapshot;
+        } finally { database.endTransaction(); }
+    }
+
+    public synchronized long cloudWordbookVersion(String cloudId, String space) {
+        try (Cursor book = getReadableDatabase().rawQuery("SELECT cloud_version FROM wordbooks WHERE cloud_id = ? AND cloud_space = ?", new String[]{cloudId, space})) {
+            return book.moveToFirst() ? book.getLong(0) : 0;
+        }
+    }
+
+    public synchronized void markWordbookPublished(CloudSnapshot snapshot, long version) {
+        ContentValues values = new ContentValues(); values.put("cloud_version", version); values.put("synced_revision", snapshot.revision);
+        getWritableDatabase().update("wordbooks", values, "id = ? AND cloud_id = ? AND cloud_space = ? AND cloud_version <= ?",
+                new String[]{String.valueOf(snapshot.localId), snapshot.id, snapshot.space, String.valueOf(version)});
+    }
+
+    public synchronized WordbookImportResult applyCloudWordbook(ImportPreview preview, String cloudId, String space, long version) {
+        java.util.UUID.fromString(cloudId);
+        if (version < 1) throw new IllegalArgumentException("云端词库版本无效。");
+        SQLiteDatabase database = getWritableDatabase();
+        String name = preview.name.trim();
+        database.beginTransaction();
+        try {
+            if (name.isEmpty() || name.length() > 100) throw new IllegalArgumentException("云端词库名称无效。");
+            String conflictCopy = "";
+            boolean existing = false;
+            try (Cursor book = database.rawQuery("SELECT id,name,cloud_version,local_revision,synced_revision FROM wordbooks WHERE cloud_id = ? AND cloud_space = ?", new String[]{cloudId, space})) {
+                if (book.moveToFirst()) {
+                    long id = book.getLong(0);
+                    if (version < book.getLong(2)) throw new IllegalArgumentException("云端返回了过期词库版本，请刷新后重试。");
+                    if (version == book.getLong(2)) {
+                        database.setTransactionSuccessful();
+                        return new WordbookImportResult(id, 0, 0, preview.items.size(), 0);
+                    }
+                    if (book.getLong(3) != book.getLong(4)) {
+                        conflictCopy = availableWordbookName(database, book.getString(1) + "（本地副本）");
+                        ContentValues copy = new ContentValues(); copy.put("name", conflictCopy); copy.put("cloud_id", "");
+                        copy.put("cloud_space", ""); copy.put("cloud_version", 0); copy.put("synced_revision", 0);
+                        database.update("wordbooks", copy, "id = ?", new String[]{String.valueOf(id)});
+                    } else { name = book.getString(1); existing = true; }
+                }
+            }
+            if (!existing) name = availableWordbookName(database, name);
+            WordbookImportResult result = importWordbook(preview, name);
+            ContentValues metadata = new ContentValues(); metadata.put("cloud_id", cloudId); metadata.put("cloud_space", space); metadata.put("cloud_version", version);
+            database.update("wordbooks", metadata, "id = ?", new String[]{String.valueOf(result.wordbookId)});
+            database.execSQL("UPDATE wordbooks SET synced_revision = local_revision WHERE id = ?", new Object[]{result.wordbookId});
+            result.conflictCopy = conflictCopy;
+            database.setTransactionSuccessful();
+            return result;
+        } finally { database.endTransaction(); }
+    }
+
+    private String availableWordbookName(SQLiteDatabase database, String requested) {
+        String base = requested.substring(0, Math.min(80, requested.length()));
+        String candidate = base;
+        int suffix = 2;
+        while (scalarInt(database, "SELECT COUNT(*) FROM wordbooks WHERE name = ?", new String[]{candidate}) > 0) candidate = base + " (" + suffix++ + ")";
+        return candidate;
+    }
+
+    public static final class WordbookImportResult {
+        public final long wordbookId;
+        public final int added, updated, ignored, invalid;
+        public String conflictCopy = "";
+        WordbookImportResult(long wordbookId, int added, int updated, int ignored, int invalid) {
+            this.wordbookId = wordbookId; this.added = added; this.updated = updated; this.ignored = ignored; this.invalid = invalid;
+        }
     }
 
     public synchronized ImportResult importPayload(JSONObject payload) throws Exception {
@@ -93,7 +280,7 @@ public final class MemoryDb extends SQLiteOpenHelper {
                 Cursor cursor = db.query(
                         "cards",
                         new String[]{"id", "content_updated_at"},
-                        "sync_key = ?",
+                        "wordbook_id = 1 AND sync_key = ?",
                         new String[]{key},
                         null,
                         null,
@@ -183,11 +370,13 @@ public final class MemoryDb extends SQLiteOpenHelper {
         return new Stats(total, due, fresh, mastered, today);
     }
 
-    public synchronized MemoryCard nextDue(long now) {
+    public synchronized MemoryCard nextDue(long now) { return nextDue(now, 0); }
+
+    public synchronized MemoryCard nextDue(long now, long wordbookId) {
         Cursor cursor = getReadableDatabase().query(
                 "cards",
                 null,
-                "archived_at = 0 AND due_at <= ?",
+                "archived_at = 0 AND due_at <= ?" + (wordbookId > 0 ? " AND wordbook_id = " + wordbookId : ""),
                 new String[]{String.valueOf(now)},
                 null,
                 null,
@@ -201,16 +390,18 @@ public final class MemoryDb extends SQLiteOpenHelper {
         }
     }
 
-    public synchronized List<MemoryCard> recent(int limit) {
+    public synchronized List<MemoryCard> recent(int limit) { return recent(limit, 0, 0); }
+
+    public synchronized List<MemoryCard> recent(int limit, long wordbookId, int offset) {
         Cursor cursor = getReadableDatabase().query(
                 "cards",
                 null,
-                "archived_at = 0",
+                "archived_at = 0" + (wordbookId > 0 ? " AND wordbook_id = " + wordbookId : ""),
                 null,
                 null,
                 null,
-                "content_updated_at DESC",
-                String.valueOf(Math.max(1, Math.min(limit, 100)))
+                "content_updated_at DESC, id DESC",
+                Math.max(0, offset) + "," + Math.max(1, Math.min(limit, 100))
         );
         List<MemoryCard> cards = new ArrayList<>();
         try {
@@ -284,6 +475,8 @@ public final class MemoryDb extends SQLiteOpenHelper {
     private MemoryCard fromCursor(Cursor cursor) {
         MemoryCard card = new MemoryCard();
         card.id = getLong(cursor, "id");
+        card.wordbookId = getLong(cursor, "wordbook_id");
+        card.category = getString(cursor, "category");
         card.syncKey = getString(cursor, "sync_key");
         card.type = getString(cursor, "type");
         card.front = getString(cursor, "front");

@@ -62,6 +62,8 @@ jobs:
           fi
       - name: 检查并构建安装包
         run: pnpm run ${{ matrix.command }}
+      - name: 验证系统密钥存储与 AI 中转站接口
+        run: pnpm exec electron scripts/verify-desktop-runtime.cjs
       - name: 验证 macOS 本地完整性签名
         if: matrix.os == 'macos-14'
         shell: bash
