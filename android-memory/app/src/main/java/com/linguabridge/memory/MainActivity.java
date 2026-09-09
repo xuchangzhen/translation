@@ -892,14 +892,38 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         });
 
         ReviewSwipeStage stage = new ReviewSwipeStage((swipedStage, direction) -> navigateReview(direction, swipedStage));
-        stage.addView(reviewCard, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ));
+        MemoryCard previousCard = reviewCardIndex > 0 ? reviewCards.get(reviewCardIndex - 1) : null;
+        MemoryCard nextCard = reviewCardIndex + 1 < reviewCards.size()
+                ? reviewCards.get(reviewCardIndex + 1)
+                : nextUnseenReviewCard();
+        stage.setCards(
+                reviewCard,
+                previousCard == null ? null : reviewPreviewCard(previousCard, "上一张"),
+                nextCard == null ? null : reviewPreviewCard(nextCard, "下一张")
+        );
         LinearLayout.LayoutParams cardParams = fullWrap();
         cardParams.topMargin = dp(12);
         body.addView(stage, cardParams);
         setPage(body);
-        animateReviewCardEntrance(stage, cardEntryDirection);
+        animateReviewCardEntrance(stage.activeCard(), cardEntryDirection);
+    }
+
+    /** A lightweight card behind the active card makes the destination visible while dragging. */
+    private View reviewPreviewCard(MemoryCard memoryCard, String position) {
+        LinearLayout preview = card();
+        preview.setGravity(Gravity.CENTER_HORIZONTAL);
+        preview.setPadding(dp(22), dp(28), dp(22), dp(24));
+        TextView positionLabel = label(position, 10, MUTED, Typeface.BOLD);
+        preview.addView(positionLabel);
+        TextView kind = label("word".equals(memoryCard.type) ? "WORD" : "SENTENCE", 10, BLUE, Typeface.BOLD);
+        kind.setPadding(0, dp(12), 0, 0);
+        preview.addView(kind);
+        TextView front = label(memoryCard.front, "word".equals(memoryCard.type) ? 28 : 21, INK, Typeface.BOLD);
+        front.setGravity(Gravity.CENTER);
+        front.setPadding(0, dp(15), 0, dp(8));
+        preview.addView(front);
+        preview.addView(label("松手即可切换", 11, MUTED, Typeface.NORMAL));
+        return preview;
     }
 
     private void revealReviewAnswer(Button reveal, View answer, View ratings, TextView swipeHint, int direction) {
@@ -961,11 +985,84 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         private float downX, downY;
         private boolean horizontalGesture;
         private final int touchSlop;
+        private View activeCard;
+        private View previousCard;
+        private View nextCard;
 
         ReviewSwipeStage(SwipeListener listener) {
             super(MainActivity.this);
             this.listener = listener;
             this.touchSlop = android.view.ViewConfiguration.get(MainActivity.this).getScaledTouchSlop();
+            setClipChildren(false);
+            setClipToPadding(false);
+        }
+
+        void setCards(View activeCard, View previousCard, View nextCard) {
+            this.activeCard = activeCard;
+            this.previousCard = previousCard;
+            this.nextCard = nextCard;
+            FrameLayout.LayoutParams layout = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            );
+            if (previousCard != null) {
+                addView(previousCard, new FrameLayout.LayoutParams(layout));
+                preparePreview(previousCard, -1);
+            }
+            if (nextCard != null) {
+                addView(nextCard, new FrameLayout.LayoutParams(layout));
+                preparePreview(nextCard, 1);
+            }
+            addView(activeCard, layout);
+            activeCard.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        }
+
+        View activeCard() {
+            return activeCard;
+        }
+
+        private void preparePreview(View card, int direction) {
+            card.setAlpha(0f);
+            card.setScaleX(0.94f);
+            card.setScaleY(0.94f);
+            card.setTranslationX(dp(direction * 20));
+        }
+
+        private void updateDrag(float dx) {
+            if (activeCard == null) return;
+            float width = Math.max(1f, getWidth());
+            float progress = Math.min(1f, Math.abs(dx) / (width * 0.62f));
+            activeCard.setTranslationX(dx);
+            activeCard.setRotation((dx / width) * 3.2f);
+            float activeScale = 1f - progress * 0.025f;
+            activeCard.setScaleX(activeScale);
+            activeCard.setScaleY(activeScale);
+            updatePreview(dx < 0f ? previousCard : nextCard, dx < 0f ? -1 : 1, progress);
+            updatePreview(dx < 0f ? nextCard : previousCard, dx < 0f ? 1 : -1, 0f);
+        }
+
+        private void updatePreview(View card, int direction, float progress) {
+            if (card == null) return;
+            card.setAlpha(progress * 0.96f);
+            float scale = 0.94f + progress * 0.06f;
+            card.setScaleX(scale);
+            card.setScaleY(scale);
+            card.setTranslationX(dp(direction * 20) * (1f - progress));
+        }
+
+        void resetVisuals() {
+            if (activeCard != null) {
+                activeCard.animate().translationX(0f).translationY(0f).rotation(0f)
+                        .scaleX(1f).scaleY(1f).alpha(1f).setDuration(220)
+                        .setInterpolator(new android.view.animation.OvershootInterpolator(0.75f)).start();
+            }
+            resetPreview(previousCard, -1);
+            resetPreview(nextCard, 1);
+        }
+
+        private void resetPreview(View card, int direction) {
+            if (card == null) return;
+            card.animate().alpha(0f).scaleX(0.94f).scaleY(0.94f).translationX(dp(direction * 20))
+                    .setDuration(150).setInterpolator(new DecelerateInterpolator()).start();
         }
 
         @Override
@@ -998,8 +1095,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                 case MotionEvent.ACTION_MOVE:
                     if (horizontalGesture) {
                         float dx = event.getX() - downX;
-                        setTranslationX(dx * 0.32f);
-                        setRotation((dx / Math.max(1f, getWidth())) * 1.2f);
+                        updateDrag(dx);
                         return true;
                     }
                     break;
@@ -1013,8 +1109,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                             performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
                             listener.onSwipe(this, dx > 0 ? 1 : -1);
                         } else {
-                            animate().translationX(0f).rotation(0f).setDuration(160)
-                                    .setInterpolator(new DecelerateInterpolator()).start();
+                            resetVisuals();
                         }
                         return true;
                     }
@@ -1023,8 +1118,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                     if (horizontalGesture) {
                         horizontalGesture = false;
                         getParent().requestDisallowInterceptTouchEvent(false);
-                        animate().translationX(0f).rotation(0f).setDuration(160)
-                                .setInterpolator(new DecelerateInterpolator()).start();
+                        resetVisuals();
                         return true;
                     }
                     break;
@@ -1051,7 +1145,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         reviewAdvancing = true;
         reviewCardIndex = targetIndex;
         reviewEntryDirection = direction;
-        animateReviewCardExit(stage, direction, this::showReview);
+        animateReviewCardExit(stage.activeCard(), direction, this::showReview);
     }
 
     private MemoryCard nextUnseenReviewCard() {
@@ -1107,11 +1201,11 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                 .withEndAction(onEnd).start();
     }
 
-    private void nudgeReviewCard(View card, int direction) {
+    private void nudgeReviewCard(ReviewSwipeStage stage, int direction) {
+        View card = stage.activeCard();
         float nudge = direction * dp(20);
         card.animate().translationX(nudge).setDuration(90).setInterpolator(new DecelerateInterpolator())
-                .withEndAction(() -> card.animate().translationX(0f).rotation(0f).setDuration(160)
-                        .setInterpolator(new DecelerateInterpolator()).start()).start();
+                .withEndAction(stage::resetVisuals).start();
     }
 
     private void showConnect() {
