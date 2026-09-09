@@ -26,6 +26,7 @@ import android.speech.tts.TextToSpeech;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
@@ -79,13 +80,21 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
     private String currentPage = "home";
     private String syncMessage = "等待自动接收";
     private boolean themeTransitioning;
+    private TextView homeSyncMessageView;
+    private TextView connectSyncMessageView;
+    private boolean reviewPracticeMode;
+    private long reviewSessionStartedAt;
+    private int reviewEntryDirection;
+    private boolean reviewAdvancing;
 
     private final BroadcastReceiver syncReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            syncMessage = intent.getStringExtra("message");
-            if ("home".equals(currentPage)) showHome();
-            if ("connect".equals(currentPage)) showConnect();
+            String message = intent.getStringExtra("message");
+            if (message != null && !message.trim().isEmpty()) syncMessage = message;
+            // The receive loop broadcasts a connected heartbeat after every long poll.
+            // Updating the visible status text keeps the screen stable instead of rebuilding it.
+            updateSyncMessageViews();
         }
     };
 
@@ -109,7 +118,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         boolean pairingIntent = handlePairingIntent(getIntent());
         if (!pairingIntent && secureStore.load() != null) CloudSyncService.start(this);
         if (pairingIntent) showConnect();
-        else if (getIntent().getBooleanExtra("openReview", false)) showReview();
+        else if (getIntent().getBooleanExtra("openReview", false)) beginReview(0);
         else showHome();
     }
 
@@ -118,7 +127,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         super.onNewIntent(intent);
         setIntent(intent);
         if (handlePairingIntent(intent)) showConnect();
-        else if (intent.getBooleanExtra("openReview", false)) { reviewWordbookId = 0; showReview(); }
+        else if (intent.getBooleanExtra("openReview", false)) beginReview(0);
     }
 
     private boolean handlePairingIntent(Intent intent) {
@@ -388,7 +397,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         progressParams.topMargin = dp(12);
         rhythm.addView(progress, progressParams);
         rhythm.addView(label(
-                stats.due == 0 ? "今天的记忆已经收好，去翻译一点新内容吧。" : "每次短暂回忆，都在把知识放进长期记忆。",
+                stats.due == 0 ? "今日计划已完成；也可以继续巩固已学内容。" : "每次短暂回忆，都在把知识放进长期记忆。",
                 10,
                 MUTED,
                 Typeface.NORMAL
@@ -397,9 +406,8 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         rhythmParams.bottomMargin = dp(16);
         body.addView(rhythm, rhythmParams);
 
-        Button start = primaryButton(stats.due > 0 ? "开始复习 · " + stats.due : "今天已完成");
-        start.setEnabled(stats.due > 0);
-        start.setOnClickListener(view -> { reviewWordbookId = 0; showReview(); });
+        Button start = primaryButton(stats.due > 0 ? "开始复习 · " + stats.due : "继续巩固已学内容");
+        start.setOnClickListener(view -> beginReview(0));
         body.addView(start, fullHeight(52));
 
         SyncConfig syncConfig = secureStore.load();
@@ -416,6 +424,8 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                 Typeface.NORMAL
         );
         syncState.setPadding(0, dp(9), 0, 0);
+        homeSyncMessageView = syncState;
+        connectSyncMessageView = null;
         sync.addView(syncState);
         TextView detail = label(
                 "端到端加密  ·  离线自动补收  ·  服务器不可读取词条",
@@ -471,10 +481,18 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         overviewTitle.addView(label("词库总览", 13, INK, Typeface.BOLD), weighted());
         overviewTitle.addView(statusPill(wordbooks.size() + " 个词库", BLUE));
         overview.addView(overviewTitle);
-        TextView overviewHint = label("选择一个词库，只查看并复习其中的内容。", 10, MUTED, Typeface.NORMAL);
+        TextView overviewHint = label("上下滑动选择词库；每项都有独立的学习进度。", 10, MUTED, Typeface.NORMAL);
         overviewHint.setPadding(0, dp(6), 0, dp(14));
         overview.addView(overviewHint);
-        overview.addView(wordbookSelector(
+        ScrollView wordbookScroll = new ScrollView(this);
+        wordbookScroll.setFillViewport(true);
+        wordbookScroll.setNestedScrollingEnabled(true);
+        wordbookScroll.setVerticalScrollBarEnabled(true);
+        LinearLayout wordbookList = vertical(0);
+        wordbookScroll.addView(wordbookList, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+        wordbookList.addView(wordbookSelector(
                 "全部", "所有词库的统一视图", stats.total, stats.due, stats.fresh,
                 libraryWordbookId == 0, "全", BLUE,
                 () -> selectLibraryWordbook(0, "全部")
@@ -482,7 +500,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         for (Wordbook book : wordbooks) {
             LinearLayout.LayoutParams selectorParams = fullWrap();
             selectorParams.topMargin = dp(9);
-            overview.addView(wordbookSelector(
+            wordbookList.addView(wordbookSelector(
                     book.name,
                     book.id == 1 ? "桌面翻译自动接收" : "自定义词库 · 本地保存",
                     book.total, book.due, book.fresh,
@@ -492,6 +510,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                     () -> selectLibraryWordbook(book.id, book.name)
             ), selectorParams);
         }
+        overview.addView(wordbookScroll, fullHeight(248));
 
         LinearLayout.LayoutParams overviewParams = fullWrap();
         overviewParams.topMargin = dp(18);
@@ -512,7 +531,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                 libraryWordbookId == 0 ? stats.due : selectedWordbookDue(wordbooks),
                 libraryWordbookId == 0 ? stats.fresh : selectedWordbookFresh(wordbooks)));
         Button study = primaryButton("开始学习 / 开始复习");
-        study.setOnClickListener(view -> { reviewWordbookId = libraryWordbookId; showReview(); });
+        study.setOnClickListener(view -> beginReview(libraryWordbookId));
         LinearLayout.LayoutParams studyParams = fullHeight(50);
         studyParams.topMargin = dp(16);
         selected.addView(study, studyParams);
@@ -737,10 +756,23 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         return row;
     }
 
+    private void beginReview(long wordbookId) {
+        reviewWordbookId = wordbookId;
+        reviewSessionStartedAt = System.currentTimeMillis();
+        reviewPracticeMode = db.nextDue(reviewSessionStartedAt, wordbookId) == null;
+        reviewEntryDirection = 0;
+        showReview();
+    }
+
     private void showReview() {
+        reviewAdvancing = false;
         selectPage("home");
         currentPage = "review";
-        MemoryCard memoryCard = db.nextDue(System.currentTimeMillis(), reviewWordbookId);
+        long now = System.currentTimeMillis();
+        MemoryCard dueCard = db.nextDue(now, reviewWordbookId);
+        final MemoryCard memoryCard = dueCard == null && reviewPracticeMode
+                ? db.nextPractice(reviewSessionStartedAt, reviewWordbookId)
+                : dueCard;
         if (memoryCard == null) {
             LinearLayout body = pageBody();
             body.setGravity(Gravity.CENTER_HORIZONTAL);
@@ -748,10 +780,12 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
             check.setGravity(Gravity.CENTER);
             check.setBackground(gradient(new int[]{BLUE, CORAL}, 30));
             body.addView(check, new LinearLayout.LayoutParams(dp(60), dp(60)));
-            TextView done = title("这一轮完成", 26);
+            TextView done = title(reviewPracticeMode ? "巩固完成" : "这一轮完成", 26);
             done.setPadding(0, dp(18), 0, 0);
             body.addView(done);
-            body.addView(subtitle("下次复习时间已按你的反馈安排。"));
+            body.addView(subtitle(reviewPracticeMode
+                    ? "这一轮可练习的内容都回忆过了。明天也可以继续巩固。"
+                    : "下次复习时间已按你的反馈安排。"));
             Button back = primaryButton("返回今天");
             back.setOnClickListener(view -> showHome());
             LinearLayout.LayoutParams params = fullHeight(52);
@@ -764,7 +798,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         LinearLayout body = pageBody();
         LinearLayout toolbar = new LinearLayout(this);
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
-        toolbar.addView(eyebrow("ACTIVE RECALL"), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        toolbar.addView(eyebrow(reviewPracticeMode ? "PRACTICE" : "ACTIVE RECALL"), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         Button finish = linkButton("结束本轮");
         finish.setOnClickListener(view -> showHome());
         toolbar.addView(finish);
@@ -788,6 +822,11 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         Button speak = linkButton("朗读");
         speak.setOnClickListener(view -> speak(memoryCard));
         reviewCard.addView(speak);
+
+        TextView swipeHint = label("不看答案也可：向左忘记  ·  向右记得", 10, MUTED, Typeface.NORMAL);
+        swipeHint.setGravity(Gravity.CENTER);
+        swipeHint.setPadding(0, dp(8), 0, 0);
+        reviewCard.addView(swipeHint);
 
         Button reveal = primaryButton("显示答案");
         LinearLayout.LayoutParams revealParams = fullHeight(50);
@@ -816,31 +855,43 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         LinearLayout ratings = new LinearLayout(this);
         ratings.setVisibility(View.GONE);
         ratings.setPadding(0, dp(16), 0, 0);
-        addRating(ratings, memoryCard, "忘记", "again", Color.rgb(197, 67, 55));
-        addRating(ratings, memoryCard, "模糊", "hard", Color.rgb(180, 119, 28));
-        addRating(ratings, memoryCard, "记得", "good", BLUE);
-        addRating(ratings, memoryCard, "轻松", "easy", Color.rgb(40, 132, 93));
+        addRating(ratings, reviewCard, memoryCard, "忘记", "again", Color.rgb(197, 67, 55), -1);
+        addRating(ratings, reviewCard, memoryCard, "模糊", "hard", Color.rgb(180, 119, 28), -1);
+        addRating(ratings, reviewCard, memoryCard, "记得", "good", BLUE, 1);
+        addRating(ratings, reviewCard, memoryCard, "轻松", "easy", Color.rgb(40, 132, 93), 1);
         reviewCard.addView(ratings, fullWrap());
         reveal.setOnClickListener(view -> {
             view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
-            reveal.setVisibility(View.GONE);
-            answer.setVisibility(View.VISIBLE);
-            ratings.setVisibility(View.VISIBLE);
-            answer.setAlpha(0f);
-            answer.setTranslationY(dp(12));
-            ratings.setAlpha(0f);
-            ratings.setTranslationY(dp(12));
-            answer.animate().alpha(1f).translationY(0f).setDuration(260).start();
-            ratings.animate().alpha(1f).translationY(0f).setStartDelay(80).setDuration(280).start();
+            revealReviewAnswer(reveal, answer, ratings, swipeHint, -1);
         });
 
+        ReviewSwipeStage stage = new ReviewSwipeStage(direction ->
+                advanceReview(memoryCard, direction > 0 ? "good" : "again", reviewCard, direction)
+        );
+        stage.addView(reviewCard, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
         LinearLayout.LayoutParams cardParams = fullWrap();
         cardParams.topMargin = dp(12);
-        body.addView(reviewCard, cardParams);
+        body.addView(stage, cardParams);
         setPage(body);
     }
 
-    private void addRating(LinearLayout parent, MemoryCard memoryCard, String title, String rating, int color) {
+    private void revealReviewAnswer(Button reveal, View answer, View ratings, TextView swipeHint, int direction) {
+        if (answer.getVisibility() == View.VISIBLE) return;
+        reveal.setVisibility(View.GONE);
+        answer.setVisibility(View.VISIBLE);
+        ratings.setVisibility(View.VISIBLE);
+        swipeHint.setText("向左：忘记  ·  向右：记得  ·  也可选择下方等级");
+        answer.setAlpha(0f);
+        answer.setTranslationX(dp(-18 * direction));
+        ratings.setAlpha(0f);
+        ratings.setTranslationX(dp(-18 * direction));
+        answer.animate().alpha(1f).translationX(0f).setDuration(240).setInterpolator(new DecelerateInterpolator()).start();
+        ratings.animate().alpha(1f).translationX(0f).setStartDelay(70).setDuration(280).setInterpolator(new DecelerateInterpolator()).start();
+    }
+
+    private void addRating(LinearLayout parent, LinearLayout reviewCard, MemoryCard memoryCard, String title, String rating, int color, int direction) {
         Button button = new Button(this);
         button.setText(title);
         button.setTextSize(11);
@@ -850,13 +901,82 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         applyFlatButtonBehavior(button);
         button.setOnClickListener(view -> {
             view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
-            db.review(memoryCard.id, rating, System.currentTimeMillis());
-            ReviewNotifications.scheduleNext(this);
-            showReview();
+            advanceReview(memoryCard, rating, reviewCard, direction);
         });
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(48), 1);
         params.setMarginEnd(dp(5));
         parent.addView(button, params);
+    }
+
+    private void advanceReview(MemoryCard memoryCard, String rating, View reviewCard, int direction) {
+        if (reviewAdvancing) return;
+        reviewAdvancing = true;
+        long reviewedAt = reviewPracticeMode
+                ? Math.max(System.currentTimeMillis(), reviewSessionStartedAt + 1)
+                : System.currentTimeMillis();
+        db.review(memoryCard.id, rating, reviewedAt);
+        ReviewNotifications.scheduleNext(this);
+        reviewCard.setEnabled(false);
+        reviewEntryDirection = -direction;
+        if (!ValueAnimator.areAnimatorsEnabled()) {
+            showReview();
+            return;
+        }
+        reviewCard.animate()
+                .translationX(direction * Math.max(dp(96), reviewCard.getWidth()))
+                .alpha(0f)
+                .setDuration(230)
+                .setInterpolator(new DecelerateInterpolator())
+                .withEndAction(this::showReview)
+                .start();
+    }
+
+    private interface SwipeListener {
+        void onSwipe(int direction);
+    }
+
+    /** Intercepts deliberate horizontal drags while leaving tap targets usable. */
+    private final class ReviewSwipeStage extends FrameLayout {
+        private final SwipeListener listener;
+        private float downX, downY;
+        private boolean horizontalGesture;
+
+        ReviewSwipeStage(SwipeListener listener) {
+            super(MainActivity.this);
+            this.listener = listener;
+        }
+
+        @Override
+        public boolean onInterceptTouchEvent(MotionEvent event) {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    downX = event.getX();
+                    downY = event.getY();
+                    horizontalGesture = false;
+                    break;
+                case MotionEvent.ACTION_MOVE:
+                    float dx = event.getX() - downX;
+                    float dy = event.getY() - downY;
+                    if (Math.abs(dx) > dp(18) && Math.abs(dx) > Math.abs(dy)) {
+                        horizontalGesture = true;
+                        return true;
+                    }
+                    break;
+            }
+            return false;
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            if (event.getActionMasked() == MotionEvent.ACTION_UP && horizontalGesture) {
+                float dx = event.getX() - downX;
+                if (Math.abs(dx) > dp(64)) {
+                    performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+                    listener.onSwipe(dx > 0 ? 1 : -1);
+                }
+            }
+            return horizontalGesture || super.onTouchEvent(event);
+        }
     }
 
     private void showConnect() {
@@ -865,18 +985,15 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         LinearLayout body = pageBody();
         body.addView(eyebrow("ENCRYPTED SYNC"));
         body.addView(title("连接桌面翻译器", 27));
-        body.addView(subtitle("只需配对一次。以后翻译完成即自动上传，手机端自动接收。"));
+        body.addView(subtitle("只需配对一次。以后翻译完成即自动上传，手机端自动接收。创建空间无需注册码。"));
 
         if (config == null) {
             LinearLayout form = card();
-            TextView intro = label("连接你的私有同步服务", 15, INK, Typeface.BOLD);
+            TextView intro = label("创建你的加密同步空间", 15, INK, Typeface.BOLD);
             form.addView(intro);
             EditText server = input("https://memory.example.com", false);
-            EditText registration = input("服务器注册码", true);
             form.addView(fieldLabel("服务器地址"));
             form.addView(server, fullHeight(50));
-            form.addView(fieldLabel("注册码"));
-            form.addView(registration, fullHeight(50));
             Button register = primaryButton("创建加密设备并开启自动接收");
             LinearLayout.LayoutParams buttonParams = fullHeight(52);
             buttonParams.topMargin = dp(18);
@@ -889,10 +1006,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                 status.setText("正在创建端到端加密通道…");
                 io.execute(() -> {
                     try {
-                        SyncConfig created = CloudApi.register(
-                                server.getText().toString(),
-                                registration.getText().toString()
-                        );
+                        SyncConfig created = CloudApi.register(server.getText().toString());
                         secureStore.save(created);
                         runOnUiThread(() -> {
                             copyPairing(created);
@@ -922,6 +1036,8 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
             connected.addView(label("设备 " + config.deviceId.substring(0, 8) + "…", 10, MUTED, Typeface.NORMAL));
             TextView state = label(syncMessage, 11, BLUE, Typeface.NORMAL);
             state.setPadding(0, dp(10), 0, 0);
+            connectSyncMessageView = state;
+            homeSyncMessageView = null;
             connected.addView(state);
             LinearLayout peers = vertical(0);
             peers.setPadding(0, dp(12), 0, 0);
@@ -1074,6 +1190,15 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         textToSpeech.speak(memoryCard.front, TextToSpeech.QUEUE_FLUSH, null, "memory-card");
     }
 
+    private void updateSyncMessageViews() {
+        if (homeSyncMessageView != null && homeSyncMessageView.isAttachedToWindow()) {
+            homeSyncMessageView.setText(syncMessage);
+        }
+        if (connectSyncMessageView != null && connectSyncMessageView.isAttachedToWindow()) {
+            connectSyncMessageView.setText(syncMessage);
+        }
+    }
+
     private void setPage(LinearLayout body) {
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
@@ -1084,14 +1209,19 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                 ViewGroup.LayoutParams.MATCH_PARENT
         ));
         if (themeTransitioning) return;
+        int horizontalEntry = "review".equals(currentPage) ? reviewEntryDirection : 0;
+        reviewEntryDirection = 0;
         body.setAlpha(0f);
-        body.setTranslationY(dp(12));
+        body.setTranslationX(horizontalEntry == 0 ? 0f : dp(horizontalEntry * 36));
+        body.setTranslationY(horizontalEntry == 0 ? dp(12) : 0f);
         AnimatorSet entrance = new AnimatorSet();
         entrance.playTogether(
                 ObjectAnimator.ofFloat(body, View.ALPHA, 0f, 1f),
-                ObjectAnimator.ofFloat(body, View.TRANSLATION_Y, dp(12), 0f)
+                ObjectAnimator.ofFloat(body, View.TRANSLATION_X, body.getTranslationX(), 0f),
+                ObjectAnimator.ofFloat(body, View.TRANSLATION_Y, body.getTranslationY(), 0f)
         );
-        entrance.setDuration(320);
+        entrance.setDuration(horizontalEntry == 0 ? 320 : 260);
+        entrance.setInterpolator(new DecelerateInterpolator());
         entrance.start();
     }
 

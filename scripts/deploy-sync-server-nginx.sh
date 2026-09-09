@@ -13,7 +13,6 @@ remote_dir="${LINGUABRIDGE_REMOTE_DIR:-linguabridge-sync}"
 identity_file="${LINGUABRIDGE_SSH_IDENTITY:-}"
 backend_port="${LINGUABRIDGE_BACKEND_PORT:-18787}"
 postgres_password="${LINGUABRIDGE_POSTGRES_PASSWORD:-$(openssl rand -hex 32)}"
-registration_key="${LINGUABRIDGE_REGISTRATION_KEY:-$(openssl rand -hex 32)}"
 
 if [[ -z "$ssh_target" || -z "$sync_domain" || -z "$server_ipv4" ]]; then
   echo "需要 LINGUABRIDGE_SSH_TARGET、LINGUABRIDGE_SYNC_DOMAIN 和 LINGUABRIDGE_SERVER_IPV4。" >&2
@@ -83,8 +82,8 @@ archive_path="$temporary_dir/linguabridge-sync.tgz"
 env_path="$temporary_dir/.env"
 receipt_path="$project_dir/sync-server/deployment.receipt.env"
 umask 077
-printf 'SYNC_DOMAIN=%s\nPOSTGRES_PASSWORD=%s\nSYNC_REGISTRATION_KEY=%s\n' \
-  "$sync_domain" "$postgres_password" "$registration_key" > "$env_path"
+printf 'SYNC_DOMAIN=%s\nPOSTGRES_PASSWORD=%s\n' \
+  "$sync_domain" "$postgres_password" > "$env_path"
 tar -C "$source_dir" --exclude=.env --exclude=node_modules --exclude=test -czf "$archive_path" .
 
 remote_archive="/tmp/linguabridge-sync-${RANDOM}-${RANDOM}.tgz"
@@ -172,7 +171,6 @@ if ! docker run -d \
   -e PGDATABASE=memory_sync \
   -e PGUSER=memory_sync \
   -e PGPASSWORD="$POSTGRES_PASSWORD" \
-  -e SYNC_REGISTRATION_KEY="$SYNC_REGISTRATION_KEY" \
   -e PORT=8787 \
   "$image_name" >/dev/null; then
   docker stop "$postgres_name" >/dev/null || true
@@ -274,14 +272,7 @@ for attempt in $(seq 1 30); do
 done
 
 echo "[6/6] 保存本机配置回执"
-if [[ "$(uname -s)" == "Darwin" ]] && command -v security >/dev/null; then
-  keychain_service="com.linguabridge.sync.registration"
-  security add-generic-password -U -a "$sync_domain" -s "$keychain_service" -w "$registration_key" >/dev/null
-  printf 'SYNC_SERVER_URL=https://%s\nKEYCHAIN_SERVICE=%s\nKEYCHAIN_ACCOUNT=%s\nSSH_TARGET=%s\nREMOTE_DIR=%s\nBACKEND_PORT=%s\nPROXY_MODE=nginx\n' \
-    "$sync_domain" "$keychain_service" "$sync_domain" "$ssh_target" "$remote_dir" "$backend_port" > "$receipt_path"
-else
-  printf 'SYNC_SERVER_URL=https://%s\nSYNC_REGISTRATION_KEY=%s\nSSH_TARGET=%s\nREMOTE_DIR=%s\nBACKEND_PORT=%s\nPROXY_MODE=nginx\n' \
-    "$sync_domain" "$registration_key" "$ssh_target" "$remote_dir" "$backend_port" > "$receipt_path"
-fi
+printf 'SYNC_SERVER_URL=https://%s\nSSH_TARGET=%s\nREMOTE_DIR=%s\nBACKEND_PORT=%s\nPROXY_MODE=nginx\n' \
+  "$sync_domain" "$ssh_target" "$remote_dir" "$backend_port" > "$receipt_path"
 chmod 600 "$receipt_path"
 echo "部署完成；本机配置回执已保存到：$receipt_path"

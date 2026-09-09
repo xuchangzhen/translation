@@ -97,10 +97,7 @@ interface LinguaApi {
     result: TranslationResult
   ): Promise<MemoryMutationResult>;
   testAndroidMemory(pairingValue?: string): Promise<AndroidMemoryTestResult>;
-  provisionAndroidMemory(
-    serverUrl: string,
-    registrationKey: string
-  ): Promise<{
+  provisionAndroidMemory(serverUrl: string): Promise<{
     settings: AppSettings;
     sync: MemorySyncStatus;
     pairingUri: string;

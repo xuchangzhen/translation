@@ -4,8 +4,6 @@ import http from "node:http";
 import test from "node:test";
 import { createHandler, MemoryRepository } from "../src/app.mjs";
 
-const registrationKey = "test-registration-key-123";
-
 function request(port, method, pathname, body, headers = {}) {
   const payload = body ? Buffer.from(JSON.stringify(body)) : null;
   return new Promise((resolve, reject) => {
@@ -31,7 +29,7 @@ function request(port, method, pathname, body, headers = {}) {
 
 test("registers a device and relays only encrypted batches", async () => {
   const repository = new MemoryRepository();
-  const server = http.createServer(createHandler({ repository, registrationKey, longPollMs: 20 }));
+  const server = http.createServer(createHandler({ repository, longPollMs: 20 }));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = server.address().port;
   const deviceId = crypto.randomUUID();
@@ -47,7 +45,7 @@ test("registers a device and relays only encrypted batches", async () => {
       deviceId,
       uploadToken,
       readToken
-    }, { "X-Registration-Key": registrationKey });
+    });
     assert.equal(created.status, 201);
 
     const queued = await request(port, "POST", `/v1/devices/${deviceId}/batches`, {
@@ -82,17 +80,23 @@ test("registers a device and relays only encrypted batches", async () => {
   }
 });
 
-test("rejects wrong registration and device tokens", async () => {
+test("allows device creation without a registration secret and still rejects wrong device tokens", async () => {
   const repository = new MemoryRepository();
-  const server = http.createServer(createHandler({ repository, registrationKey }));
+  const server = http.createServer(createHandler({ repository }));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = server.address().port;
   try {
-    const denied = await request(port, "POST", "/v1/devices", {
-      deviceId: crypto.randomUUID(),
-      uploadToken: crypto.randomBytes(32).toString("base64url"),
+    const deviceId = crypto.randomUUID();
+    const uploadToken = crypto.randomBytes(32).toString("base64url");
+    const created = await request(port, "POST", "/v1/devices", {
+      deviceId,
+      uploadToken,
       readToken: crypto.randomBytes(32).toString("base64url")
-    }, { "X-Registration-Key": "wrong" });
+    }, { "X-Registration-Key": "legacy-value-is-ignored" });
+    assert.equal(created.status, 201);
+    const denied = await request(port, "GET", `/v1/devices/${deviceId}/status`, null, {
+      Authorization: `Bearer ${crypto.randomBytes(32).toString("base64url")}`
+    });
     assert.equal(denied.status, 401);
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -101,7 +105,7 @@ test("rejects wrong registration and device tokens", async () => {
 
 test("syncs encrypted wordbook snapshots with read-token ACL and CAS", async () => {
   const repository = new MemoryRepository();
-  const server = http.createServer(createHandler({ repository, registrationKey }));
+  const server = http.createServer(createHandler({ repository }));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = server.address().port;
   const deviceId = crypto.randomUUID();
@@ -111,7 +115,7 @@ test("syncs encrypted wordbook snapshots with read-token ACL and CAS", async () 
   const readToken = crypto.randomBytes(32).toString("base64url");
   const envelope = { algorithm: "A256GCM", nonce: crypto.randomBytes(12).toString("base64url"), ciphertext: crypto.randomBytes(40).toString("base64url") };
   try {
-    assert.equal((await request(port, "POST", "/v1/devices", { deviceId, uploadToken, readToken }, { "X-Registration-Key": registrationKey })).status, 201);
+    assert.equal((await request(port, "POST", "/v1/devices", { deviceId, uploadToken, readToken })).status, 201);
     const base = `/v1/devices/${deviceId}/wordbooks/${bookId}/uploads/${uploadId}`;
     assert.equal((await request(port, "PUT", `${base}/chunks/0`, { protocol: "linguabridge-wordbooks/1", envelope }, { Authorization: `Bearer ${uploadToken}` })).status, 401);
     assert.equal((await request(port, "PUT", `${base}/chunks/0`, { protocol: "linguabridge-wordbooks/1", envelope }, { Authorization: `Bearer ${readToken}` })).status, 200);
@@ -134,7 +138,7 @@ test("syncs encrypted wordbook snapshots with read-token ACL and CAS", async () 
 
 test("reports desktop presence and allows the paired phone to read it", async () => {
   const repository = new MemoryRepository();
-  const server = http.createServer(createHandler({ repository, registrationKey }));
+  const server = http.createServer(createHandler({ repository }));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = server.address().port;
   const deviceId = crypto.randomUUID();
@@ -146,7 +150,7 @@ test("reports desktop presence and allows the paired phone to read it", async ()
       deviceId,
       uploadToken,
       readToken
-    }, { "X-Registration-Key": registrationKey })).status, 201);
+    })).status, 201);
 
     const heartbeat = await request(
       port,
@@ -185,7 +189,7 @@ test("reports desktop presence and allows the paired phone to read it", async ()
 
 test("relays a one-time encrypted desktop join without seeing its contents", async () => {
   const repository = new MemoryRepository();
-  const server = http.createServer(createHandler({ repository, registrationKey }));
+  const server = http.createServer(createHandler({ repository }));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = server.address().port;
   const deviceId = crypto.randomUUID();
@@ -200,7 +204,7 @@ test("relays a one-time encrypted desktop join without seeing its contents", asy
       deviceId,
       uploadToken,
       readToken
-    }, { "X-Registration-Key": registrationKey });
+    });
     assert.equal(createdDevice.status, 201);
 
     const createdTransfer = await request(

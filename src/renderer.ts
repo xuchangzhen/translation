@@ -469,7 +469,7 @@ function settingsMarkup() {
               <div class="android-pairing-ready">
                 <div><strong>同步空间已连接 <em class="saved-badge">端到端加密</em></strong><small>Mac mini、Windows 和安卓可以使用同一个空间，不必重复配对手机。</small></div>
                 <div class="settings-actions">
-                  <button id="create-desktop-join" class="button primary" type="button">添加另一台电脑</button>
+                  <button id="create-desktop-join" class="button primary" type="button">邀请另一台电脑加入</button>
                   <button id="show-android-pairing" class="button subtle" type="button">手机配对码</button>
                   <button id="clear-android-memory-pairing" class="text-button danger" type="button">解除连接</button>
                 </div>
@@ -489,7 +489,7 @@ function settingsMarkup() {
                 <span class="desktop-join-icon">✓</span>
                 <div>
                   <strong id="desktop-join-title">一次性加入链接已复制</strong>
-                  <p id="desktop-join-status">在另一台电脑的“加入已有空间”中粘贴。链接 15 分钟后失效，且只能使用一次。</p>
+                  <p id="desktop-join-status">第 1 步：把链接发送给另一台电脑；第 2 步：对方打开“同步空间”，选择“加入已有空间”。链接 15 分钟后失效且只能使用一次。</p>
                   <label id="desktop-join-output-row" class="field desktop-join-output" hidden><span>一次性加入链接（请私下转发）</span><input id="desktop-join-output" type="password" readonly autocomplete="off"></label>
                   <div id="desktop-join-actions" class="settings-actions" hidden>
                     <button id="copy-desktop-join" class="button subtle" type="button">再次复制链接</button>
@@ -498,25 +498,24 @@ function settingsMarkup() {
                 </div>
               </div>
             ` : `
-              <div class="desktop-join-panel">
-                <div><strong>加入已有同步空间</strong><small>在已连接的 Mac mini 上点击“添加另一台电脑”，把生成的链接复制到这里。安卓端无需任何操作。</small></div>
-                <label class="field"><span>一次性电脑加入链接</span><input id="desktop-join-link" type="password" autocomplete="off" placeholder="linguabridge-space://join?…"></label>
-                <div class="settings-actions span-2">
-                  <button id="join-desktop-space" class="button primary" type="button">加入同一空间</button>
-                  <span id="desktop-join-status">只需一次，之后翻译内容会自动汇入同一部手机</span>
-                </div>
-              </div>
-              <details class="android-advanced first-space">
-                <summary>首次使用：创建一个新同步空间</summary>
-                <div class="android-provision-grid">
-                  <label class="field"><span>同步服务器</span><input id="setting-sync-server-url" autocomplete="url" placeholder="https://memory.example.com"></label>
-                  <label class="field"><span>服务器注册码</span><input id="setting-sync-registration-key" type="password" autocomplete="off" placeholder="部署后自动生成"></label>
+              <div class="sync-space-setup">
+                <div class="desktop-join-panel">
+                  <div><strong>加入已有同步空间</strong><small>在已连接的电脑中打开“偏好设置 → 安卓单词记忆”，点击“邀请另一台电脑加入”。把生成的一次性链接粘贴到这里；安卓端无需任何操作。</small></div>
+                  <label class="field"><span>第 2 步：粘贴一次性加入链接</span><input id="desktop-join-link" type="password" autocomplete="off" placeholder="linguabridge-space://join?…"></label>
                   <div class="settings-actions span-2">
-                    <button id="create-android-memory" class="button subtle" type="button">创建空间并连接手机</button>
-                    <span id="android-provision-status">仅第一台电脑需要使用</span>
+                    <button id="join-desktop-space" class="button primary" type="button">加入已有空间</button>
+                    <span id="desktop-join-status">成功后，这台电脑的翻译会自动汇入同一部手机</span>
                   </div>
                 </div>
-              </details>
+                <div class="desktop-join-panel first-space">
+                  <div><strong>首次使用：创建同步空间</strong><small>只需填写一次同步服务器地址。不会再要求服务器注册码；创建后用手机扫描二维码即可。</small></div>
+                  <label class="field"><span>同步服务器地址</span><input id="setting-sync-server-url" autocomplete="url" placeholder="https://memory.example.com"></label>
+                  <div class="settings-actions">
+                    <button id="create-android-memory" class="button subtle" type="button">创建空间并显示手机二维码</button>
+                    <span id="android-provision-status">创建后可随时邀请其他电脑加入</span>
+                  </div>
+                </div>
+              </div>
             `}
             <div id="android-pairing-result" class="android-pairing-result" hidden>
               <img id="android-pairing-qr" alt="安卓单词记忆配对二维码">
@@ -1189,18 +1188,12 @@ async function provisionAndroidMemory() {
   const serverUrl = document
     .querySelector<HTMLInputElement>("#setting-sync-server-url")
     ?.value.trim() || "";
-  const registrationKey = document
-    .querySelector<HTMLInputElement>("#setting-sync-registration-key")
-    ?.value.trim() || "";
   if (!button || !status) return;
   button.disabled = true;
   status.classList.remove("error");
   status.textContent = "正在创建端到端加密设备…";
   try {
-    const response = await window.lingua.provisionAndroidMemory(
-      serverUrl,
-      registrationKey
-    );
+    const response = await window.lingua.provisionAndroidMemory(serverUrl);
     settings = response.settings;
     memorySyncStatus = response.sync;
     renderMemorySyncStatus(response.sync);

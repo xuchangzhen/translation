@@ -49,11 +49,8 @@ public final class CloudApi {
         }
     }
 
-    public static SyncConfig register(String rawServerUrl, String registrationKey) throws Exception {
+    public static SyncConfig register(String rawServerUrl) throws Exception {
         String serverUrl = normalizeServerUrl(rawServerUrl);
-        if (registrationKey.trim().length() < 16) {
-            throw new IllegalArgumentException("服务器注册码至少需要 16 个字符");
-        }
         SyncConfig config = new SyncConfig(
                 serverUrl,
                 UUID.randomUUID().toString(),
@@ -69,8 +66,8 @@ public final class CloudApi {
                 serverUrl + "/v1/devices",
                 "POST",
                 body,
-                "X-Registration-Key",
-                registrationKey.trim(),
+                null,
+                null,
                 12_000
         );
         if (!response.optBoolean("created")) throw new IllegalStateException("服务器未创建设备");
@@ -271,7 +268,7 @@ public final class CloudApi {
         connection.setReadTimeout(readTimeout);
         connection.setUseCaches(false);
         connection.setRequestProperty("Accept", "application/json");
-        connection.setRequestProperty(headerName, headerValue);
+        if (headerName != null && headerValue != null) connection.setRequestProperty(headerName, headerValue);
         if (body != null) {
             byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
             connection.setDoOutput(true);

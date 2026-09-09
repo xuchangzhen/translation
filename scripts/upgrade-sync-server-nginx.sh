@@ -97,7 +97,6 @@ docker run -d \
   -e PGDATABASE=memory_sync \
   -e PGUSER=memory_sync \
   -e PGPASSWORD="$POSTGRES_PASSWORD" \
-  -e SYNC_REGISTRATION_KEY="$SYNC_REGISTRATION_KEY" \
   -e PORT=8787 \
   "$candidate_image" >/dev/null
 

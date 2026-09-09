@@ -283,10 +283,7 @@ export class MemoryRepository {
   }
 }
 
-export function createHandler({ repository, registrationKey, longPollMs = 25_000 }) {
-  if (!registrationKey || registrationKey.length < 16) {
-    throw new Error("SYNC_REGISTRATION_KEY 至少需要 16 个字符");
-  }
+export function createHandler({ repository, longPollMs = 25_000 }) {
   const events = new EventEmitter();
   events.setMaxListeners(1000);
   const rateBuckets = new Map();
@@ -334,9 +331,6 @@ export function createHandler({ repository, registrationKey, longPollMs = 25_000
       }
 
       if (request.method === "POST" && url.pathname === "/v1/devices") {
-        if (!safeEqual(request.headers["x-registration-key"], registrationKey)) {
-          throw Object.assign(new Error("服务器注册码无效"), { status: 401 });
-        }
         const body = await readJson(request);
         if (!DEVICE_ID_PATTERN.test(body.deviceId || "")) {
           throw Object.assign(new Error("设备编号无效"), { status: 400 });

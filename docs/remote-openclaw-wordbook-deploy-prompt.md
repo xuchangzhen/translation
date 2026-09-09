@@ -26,5 +26,5 @@ docker exec linguabridge-memory-relay node src/verify-wordbooks.mjs
 
 9. 通过后将候选 src/、package.json、Dockerfile、README.md、test/ 和 SOURCE.json 同步到 /root/linguabridge-sync 对应位置，使源码和运行镜像一致，保留远端配置和数据卷。失败则恢复旧应用镜像与启动配置并检查健康；新增表可以保留，禁止直接用旧数据库备份覆盖上线后的新写入。
 
-禁止 down -v、删除生产表或重置凭据。不要输出密码、注册码、token、Authorization、明文词条或密文。最终返回：源包 SHA-256、运行镜像 ID、迁移结果、协议检查、验收摘要、备份路径和回滚情况。
+禁止 down -v、删除生产表或重置凭据。不要输出密码、token、Authorization、明文词条或密文。最终返回：源包 SHA-256、运行镜像 ID、迁移结果、协议检查、验收摘要、备份路径和回滚情况。
 ```

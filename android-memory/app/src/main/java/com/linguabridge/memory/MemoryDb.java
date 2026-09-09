@@ -390,6 +390,29 @@ public final class MemoryDb extends SQLiteOpenHelper {
         }
     }
 
+    /**
+     * Returns an already learned card that has not been touched in the current
+     * self-study session. This lets learners keep practicing after all due cards
+     * are complete without changing the scheduling rules for the rest of the day.
+     */
+    public synchronized MemoryCard nextPractice(long sessionStartedAt, long wordbookId) {
+        Cursor cursor = getReadableDatabase().query(
+                "cards",
+                null,
+                "archived_at = 0 AND last_reviewed_at <= ?" + (wordbookId > 0 ? " AND wordbook_id = " + wordbookId : ""),
+                new String[]{String.valueOf(sessionStartedAt)},
+                null,
+                null,
+                "last_reviewed_at ASC, due_at ASC, repetitions ASC, created_at ASC",
+                "1"
+        );
+        try {
+            return cursor.moveToFirst() ? fromCursor(cursor) : null;
+        } finally {
+            cursor.close();
+        }
+    }
+
     public synchronized List<MemoryCard> recent(int limit) { return recent(limit, 0, 0); }
 
     public synchronized List<MemoryCard> recent(int limit, long wordbookId, int offset) {

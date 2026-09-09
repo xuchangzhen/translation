@@ -1,8 +1,6 @@
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
-const { execFile } = require("node:child_process");
-const { promisify } = require("node:util");
 const QRCode = require("qrcode");
 const { app } = require("electron");
 const { SettingsStore } = require("../src/lib/settings.cjs");
@@ -12,7 +10,6 @@ const {
   testAndroidMemoryConnection
 } = require("../src/lib/android-sync.cjs");
 
-const execFileAsync = promisify(execFile);
 const projectDir = path.join(__dirname, "..");
 const receiptPath = path.join(projectDir, "sync-server", "deployment.receipt.env");
 const qrPath = path.join(projectDir, "release", "android-memory-pairing.png");
@@ -23,24 +20,10 @@ function readReceipt() {
     const separator = line.indexOf("=");
     if (separator > 0) values[line.slice(0, separator)] = line.slice(separator + 1);
   }
-  for (const key of ["SYNC_SERVER_URL", "KEYCHAIN_SERVICE", "KEYCHAIN_ACCOUNT"]) {
+  for (const key of ["SYNC_SERVER_URL"]) {
     if (!values[key]) throw new Error(`部署回执缺少 ${key}`);
   }
   return values;
-}
-
-async function registrationKey(receipt) {
-  const { stdout } = await execFileAsync("/usr/bin/security", [
-    "find-generic-password",
-    "-s",
-    receipt.KEYCHAIN_SERVICE,
-    "-a",
-    receipt.KEYCHAIN_ACCOUNT,
-    "-w"
-  ]);
-  const value = stdout.trim();
-  if (value.length < 16) throw new Error("钥匙串中的服务器注册码无效");
-  return value;
 }
 
 async function saveQr(pairingUri) {
@@ -75,10 +58,7 @@ app.whenReady().then(async () => {
       }
     }
     if (!pairingUri) {
-      const provisioned = await provisionAndroidMemoryConnection(
-        receipt.SYNC_SERVER_URL,
-        await registrationKey(receipt)
-      );
+      const provisioned = await provisionAndroidMemoryConnection(receipt.SYNC_SERVER_URL);
       pairingUri = provisioned.pairingUri;
       store.update({
         androidMemoryPairing: pairingUri,

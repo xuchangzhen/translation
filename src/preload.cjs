@@ -14,8 +14,8 @@ contextBridge.exposeInMainWorld("lingua", {
     ipcRenderer.invoke("memory:capture", { text, result }),
   testAndroidMemory: (pairingValue = "") =>
     ipcRenderer.invoke("memory:test-android", pairingValue),
-  provisionAndroidMemory: (serverUrl, registrationKey) =>
-    ipcRenderer.invoke("memory:provision-android", { serverUrl, registrationKey }),
+  provisionAndroidMemory: (serverUrl) =>
+    ipcRenderer.invoke("memory:provision-android", { serverUrl }),
   getAndroidMemoryPairing: () =>
     ipcRenderer.invoke("memory:get-phone-pairing"),
   createDesktopJoinLink: () =>

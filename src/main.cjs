@@ -1458,8 +1458,7 @@ function registerIpc() {
   });
   ipcMain.handle("memory:provision-android", async (_event, payload) => {
     const provisioned = await provisionAndroidMemoryConnection(
-      payload?.serverUrl,
-      payload?.registrationKey
+      payload?.serverUrl
     );
     const settings = store.update({
       androidMemoryPairing: provisioned.pairingUri,

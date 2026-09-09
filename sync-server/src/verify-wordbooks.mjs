@@ -31,8 +31,7 @@ async function request(label, method, route, body, expected, token = readToken) 
   const response = await fetch(`${baseUrl}${route}`, {
     method, signal: AbortSignal.timeout(15000),
     headers: {
-      "Content-Type": "application/json", Authorization: `Bearer ${token}`,
-      ...(route === "/v1/devices" ? { "X-Registration-Key": process.env.SYNC_REGISTRATION_KEY } : {})
+      "Content-Type": "application/json", Authorization: `Bearer ${token}`
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) })
   });
@@ -42,7 +41,7 @@ async function request(label, method, route, body, expected, token = readToken) 
   return data;
 }
 try {
-  if (!process.env.SYNC_REGISTRATION_KEY || (!process.env.DATABASE_URL && !process.env.PGHOST)) throw new Error("missing environment");
+  if (!process.env.DATABASE_URL && !process.env.PGHOST) throw new Error("missing database environment");
   const health = await request("health", "GET", "/healthz", undefined, 200);
   if (!health.protocols?.includes(protocol)) throw new Error("missing protocol");
   await request("registration", "POST", "/v1/devices", { deviceId, uploadToken, readToken }, 201);

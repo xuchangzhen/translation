@@ -151,7 +151,7 @@ Google、OpenAI、Compatible 三组 Key 使用 Electron `safeStorage` 分别加�
 
 ### 部署加密同步服务
 
-服务端位于 [`sync-server`](sync-server)，提供 PostgreSQL 持久化、设备读写令牌、注册密钥保护、限流、长轮询即时下发和 Caddy 自动 HTTPS。日常部署推荐让维护者直接运行自动化脚本，用户只需提供 SSH 地址和同步子域名：
+服务端位于 [`sync-server`](sync-server)，提供 PostgreSQL 持久化、设备读写令牌、限流、长轮询即时下发和 Caddy 自动 HTTPS。日常部署推荐让维护者直接运行自动化脚本，用户只需提供 SSH 地址和同步子域名：
 
 ```bash
 LINGUABRIDGE_SSH_TARGET=user@server \
@@ -159,7 +159,7 @@ LINGUABRIDGE_SYNC_DOMAIN=memory.example.com \
 ./scripts/deploy-sync-server.sh
 ```
 
-脚本自动生成强随机数据库密码和注册码、上传服务、启动容器、申请 HTTPS、检查公网健康状态，并把注册码放入 macOS 钥匙串。
+脚本自动生成强随机数据库密码、上传服务、启动容器、申请 HTTPS 并检查公网健康状态。创建空间不再依赖服务器注册码；每个空间仍由独立的随机设备令牌和内容密钥保护。
 
 如果服务器的 80/443 已由现有 Nginx 承载其他业务，不需要迁移或停机。使用共享服务器脚本后，同步服务只监听 `127.0.0.1:18787`，新增独立子域名站点并沿用 Nginx/Certbot；脚本不会升级 Docker，也不会覆盖已有站点：
 
@@ -178,11 +178,11 @@ LINGUABRIDGE_SERVER_IPV4=15.204.209.199 \
 ```bash
 cd sync-server
 cp .env.example .env
-# 修改域名、数据库密码和注册码
+# 修改域名和数据库密码
 docker compose up -d --build
 ```
 
-将域名解析到服务器并开放 80/443 后，访问 `https://你的域名/healthz` 检查服务。在桌面翻译器中填写同步地址和一次性服务器注册码，点击“一键连接手机”；再用安卓手机相机扫描本机生成的二维码，应用会自动验证、保存密钥并开启后台接收。无需复制长密钥或手动导入。
+将域名解析到服务器并开放 80/443 后，访问 `https://你的域名/healthz` 检查服务。在桌面翻译器中填写同步地址并创建空间，再用安卓手机相机扫描本机生成的二维码；应用会自动验证、保存密钥并开启后台接收。无需复制长密钥、注册码或手动导入。
 
 本次词库跨设备同步新增了 PostgreSQL 表和接口。若由远端 OpenClaw 执行部署、迁移和验收，请使用 [`docs/remote-openclaw-wordbook-deploy-prompt.md`](docs/remote-openclaw-wordbook-deploy-prompt.md) 中的完整提示词；它包含备份、健康检查、接口验收、脱敏和回滚要求。
 

@@ -72,6 +72,18 @@ public class MemoryDbWordbookTest {
         assertEquals(60, db.recent(60, r.wordbookId, 60).size());
         System.out.println("20,000-word parse + transaction + review: " + (System.currentTimeMillis() - started) + " ms");
     }
+    @Test public void keepsPracticeAvailableAfterTodaysDueCardsAreFinished() {
+        long book = db.importWordbook(file("贮藏"), "CET-4").wordbookId;
+        long now = System.currentTimeMillis();
+        MemoryCard card = db.nextDue(now, book);
+        db.review(card.id, "good", now);
+        assertNull(db.nextDue(now + 1, book));
+        MemoryCard practice = db.nextPractice(now + 1, book);
+        assertNotNull(practice);
+        assertEquals(card.id, practice.id);
+        db.review(practice.id, "good", now + 2);
+        assertNull(db.nextPractice(now + 1, book));
+    }
     @Test public void failedImportRollsBackEntireBook() {
         db.getWritableDatabase().execSQL("CREATE TRIGGER reject_bad BEFORE INSERT ON cards WHEN NEW.front = 'bad' BEGIN SELECT RAISE(ABORT, 'test failure'); END");
         try {

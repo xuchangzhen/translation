@@ -23,7 +23,6 @@ services:
       PGDATABASE: memory_sync
       PGUSER: memory_sync
       PGPASSWORD: ${POSTGRES_PASSWORD}
-      SYNC_REGISTRATION_KEY: ${SYNC_REGISTRATION_KEY}
       PORT: 8787
     depends_on:
       postgres:

@@ -1654,6 +1654,7 @@ kbd {
   }
 
   .android-provision-grid,
+  .app-shell .sync-space-setup,
   .android-pairing-result:not([hidden]) {
     grid-template-columns: 1fr;
   }
@@ -2628,6 +2629,22 @@ html.popup-page[data-theme="dark"] .popup-spinner {
 .app-shell .desktop-join-panel {
   display: grid;
   gap: 15px;
+}
+
+.app-shell .sync-space-setup {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.app-shell .sync-space-setup .desktop-join-panel {
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.app-shell .desktop-join-panel.first-space {
+  border-style: dashed;
+  background: rgba(255, 255, 255, 0.018);
 }
 
 .app-shell .desktop-join-panel > div:first-child {

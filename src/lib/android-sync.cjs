@@ -218,12 +218,8 @@ function requestJson(pairingValue, method, pathname, body) {
   );
 }
 
-async function provisionAndroidMemoryConnection(serverValue, registrationValue) {
+async function provisionAndroidMemoryConnection(serverValue) {
   const serverUrl = normalizeServerUrl(serverValue);
-  const registrationKey = String(registrationValue || "").trim();
-  if (registrationKey.length < 16) {
-    throw new Error("服务器注册码至少需要 16 个字符");
-  }
   const pairing = {
     serverUrl,
     deviceId: crypto.randomUUID(),
@@ -235,7 +231,7 @@ async function provisionAndroidMemoryConnection(serverValue, registrationValue) 
     serverUrl,
     "POST",
     "/v1/devices",
-    { "X-Registration-Key": registrationKey },
+    {},
     {
       deviceId: pairing.deviceId,
       uploadToken: pairing.uploadToken,

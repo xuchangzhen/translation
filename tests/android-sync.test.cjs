@@ -60,12 +60,11 @@ test("AES-GCM batch encryption round-trips and rejects a wrong key", () => {
 });
 
 test("desktop provisions a complete phone pairing without exposing secrets to the relay response", async () => {
-  const registrationKey = crypto.randomBytes(32).toString("base64url");
   let registrationBody;
   const server = http.createServer((request, response) => {
     assert.equal(request.method, "POST");
     assert.equal(request.url, "/v1/devices");
-    assert.equal(request.headers["x-registration-key"], registrationKey);
+    assert.equal(request.headers["x-registration-key"], undefined);
     const chunks = [];
     request.on("data", (chunk) => chunks.push(chunk));
     request.on("end", () => {
@@ -78,10 +77,7 @@ test("desktop provisions a complete phone pairing without exposing secrets to th
   await listen(server);
   try {
     const port = server.address().port;
-    const result = await provisionAndroidMemoryConnection(
-      `http://127.0.0.1:${port}`,
-      registrationKey
-    );
+    const result = await provisionAndroidMemoryConnection(`http://127.0.0.1:${port}`);
     const parsed = parsePairing(result.pairingUri);
     assert.equal(parsed.deviceId, registrationBody.deviceId);
     assert.equal(parsed.uploadToken, registrationBody.uploadToken);
@@ -151,16 +147,12 @@ test("tests the cloud relay and uploads ciphertext only", async () => {
 
 test("adds another desktop to the same phone space through a one-time encrypted link", async () => {
   const { createHandler, MemoryRepository } = await import("../sync-server/src/app.mjs");
-  const registrationKey = crypto.randomBytes(32).toString("base64url");
   const repository = new MemoryRepository();
-  const server = http.createServer(createHandler({ repository, registrationKey }));
+  const server = http.createServer(createHandler({ repository }));
   await listen(server);
   try {
     const port = server.address().port;
-    const original = await provisionAndroidMemoryConnection(
-      `http://127.0.0.1:${port}`,
-      registrationKey
-    );
+    const original = await provisionAndroidMemoryConnection(`http://127.0.0.1:${port}`);
     const transfer = await createDesktopJoinLink(original.pairingUri, "Mac mini");
     assert.match(transfer.joinLink, /^linguabridge-space:\/\/join\?/);
     assert.doesNotMatch(transfer.joinLink, new RegExp(original.encryptionKey));
