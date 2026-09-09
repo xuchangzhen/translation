@@ -11,6 +11,8 @@ import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import static org.junit.Assert.*;
 
 @RunWith(RobolectricTestRunner.class)
@@ -83,6 +85,18 @@ public class MemoryDbWordbookTest {
         assertEquals(card.id, practice.id);
         db.review(practice.id, "good", now + 2);
         assertNull(db.nextPractice(now + 1, book));
+    }
+    @Test public void reviewNavigationLoadsUnseenCardsWithoutChangingTheirSchedules() {
+        long book = db.importWordbook(WordbookImporter.parse("word,translation\nfirst,第一\nsecond,第二", "navigation.csv"), "导航").wordbookId;
+        long now = System.currentTimeMillis();
+        List<Long> shown = new ArrayList<>();
+        MemoryCard first = db.nextDueExcluding(now, book, shown);
+        shown.add(first.id);
+        MemoryCard second = db.nextDueExcluding(now, book, shown);
+        shown.add(second.id);
+        assertNotEquals(first.id, second.id);
+        assertNull(db.nextDueExcluding(now, book, shown));
+        assertEquals(2, db.stats(now).due);
     }
     @Test public void failedImportRollsBackEntireBook() {
         db.getWritableDatabase().execSQL("CREATE TRIGGER reject_bad BEFORE INSERT ON cards WHEN NEW.front = 'bad' BEGIN SELECT RAISE(ABORT, 'test failure'); END");

@@ -390,6 +390,15 @@ public final class MemoryDb extends SQLiteOpenHelper {
         }
     }
 
+    /** Returns the next due card that has not already been shown in this review session. */
+    public synchronized MemoryCard nextDueExcluding(long now, long wordbookId, List<Long> excludedIds) {
+        List<String> args = new ArrayList<>();
+        StringBuilder selection = new StringBuilder("archived_at = 0 AND due_at <= ?");
+        args.add(String.valueOf(now));
+        appendWordbookAndExclusions(selection, args, wordbookId, excludedIds);
+        return firstMatchingCard(selection.toString(), args, "due_at ASC, repetitions ASC, created_at ASC");
+    }
+
     /**
      * Returns an already learned card that has not been touched in the current
      * self-study session. This lets learners keep practicing after all due cards
@@ -405,6 +414,41 @@ public final class MemoryDb extends SQLiteOpenHelper {
                 null,
                 "last_reviewed_at ASC, due_at ASC, repetitions ASC, created_at ASC",
                 "1"
+        );
+        try {
+            return cursor.moveToFirst() ? fromCursor(cursor) : null;
+        } finally {
+            cursor.close();
+        }
+    }
+
+    /** Returns the next practice card that has not already been shown in this self-study session. */
+    public synchronized MemoryCard nextPracticeExcluding(long sessionStartedAt, long wordbookId, List<Long> excludedIds) {
+        List<String> args = new ArrayList<>();
+        StringBuilder selection = new StringBuilder("archived_at = 0 AND last_reviewed_at <= ?");
+        args.add(String.valueOf(sessionStartedAt));
+        appendWordbookAndExclusions(selection, args, wordbookId, excludedIds);
+        return firstMatchingCard(selection.toString(), args, "last_reviewed_at ASC, due_at ASC, repetitions ASC, created_at ASC");
+    }
+
+    private void appendWordbookAndExclusions(StringBuilder selection, List<String> args, long wordbookId, List<Long> excludedIds) {
+        if (wordbookId > 0) {
+            selection.append(" AND wordbook_id = ?");
+            args.add(String.valueOf(wordbookId));
+        }
+        if (excludedIds == null || excludedIds.isEmpty()) return;
+        selection.append(" AND id NOT IN (");
+        for (int index = 0; index < excludedIds.size(); index++) {
+            if (index > 0) selection.append(',');
+            selection.append('?');
+            args.add(String.valueOf(excludedIds.get(index)));
+        }
+        selection.append(')');
+    }
+
+    private MemoryCard firstMatchingCard(String selection, List<String> args, String orderBy) {
+        Cursor cursor = getReadableDatabase().query(
+                "cards", null, selection, args.toArray(new String[0]), null, null, orderBy, "1"
         );
         try {
             return cursor.moveToFirst() ? fromCursor(cursor) : null;

@@ -42,7 +42,10 @@ import android.widget.Space;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -86,6 +89,10 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
     private long reviewSessionStartedAt;
     private int reviewEntryDirection;
     private boolean reviewAdvancing;
+    /** Cards encountered in this session. Keeping this small, growing history makes swipe-back predictable. */
+    private final List<MemoryCard> reviewCards = new ArrayList<>();
+    private final Map<Long, String> reviewRatings = new HashMap<>();
+    private int reviewCardIndex = -1;
 
     private final BroadcastReceiver syncReceiver = new BroadcastReceiver() {
         @Override
@@ -760,6 +767,14 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         reviewWordbookId = wordbookId;
         reviewSessionStartedAt = System.currentTimeMillis();
         reviewPracticeMode = db.nextDue(reviewSessionStartedAt, wordbookId) == null;
+        reviewCards.clear();
+        reviewRatings.clear();
+        reviewCardIndex = -1;
+        MemoryCard first = nextUnseenReviewCard();
+        if (first != null) {
+            reviewCards.add(first);
+            reviewCardIndex = 0;
+        }
         reviewEntryDirection = 0;
         showReview();
     }
@@ -768,11 +783,11 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         reviewAdvancing = false;
         selectPage("home");
         currentPage = "review";
-        long now = System.currentTimeMillis();
-        MemoryCard dueCard = db.nextDue(now, reviewWordbookId);
-        final MemoryCard memoryCard = dueCard == null && reviewPracticeMode
-                ? db.nextPractice(reviewSessionStartedAt, reviewWordbookId)
-                : dueCard;
+        final int cardEntryDirection = reviewEntryDirection;
+        reviewEntryDirection = 0;
+        final MemoryCard memoryCard = reviewCardIndex >= 0 && reviewCardIndex < reviewCards.size()
+                ? reviewCards.get(reviewCardIndex)
+                : null;
         if (memoryCard == null) {
             LinearLayout body = pageBody();
             body.setGravity(Gravity.CENTER_HORIZONTAL);
@@ -804,6 +819,8 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         toolbar.addView(finish);
         body.addView(toolbar);
 
+        final String savedRating = reviewRatings.get(memoryCard.id);
+        final boolean recordedThisSession = savedRating != null;
         LinearLayout reviewCard = card();
         reviewCard.setGravity(Gravity.CENTER_HORIZONTAL);
         reviewCard.setPadding(dp(22), dp(28), dp(22), dp(24));
@@ -823,7 +840,9 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         speak.setOnClickListener(view -> speak(memoryCard));
         reviewCard.addView(speak);
 
-        TextView swipeHint = label("不看答案也可：向左忘记  ·  向右记得", 10, MUTED, Typeface.NORMAL);
+        TextView swipeHint = label(recordedThisSession
+                ? "本轮已记录 · 左滑上一张  ·  右滑下一张"
+                : "左滑上一张  ·  右滑下一张", 10, MUTED, Typeface.NORMAL);
         swipeHint.setGravity(Gravity.CENTER);
         swipeHint.setPadding(0, dp(8), 0, 0);
         reviewCard.addView(swipeHint);
@@ -834,7 +853,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         reviewCard.addView(reveal, revealParams);
 
         LinearLayout answer = vertical(10);
-        answer.setVisibility(View.GONE);
+        answer.setVisibility(recordedThisSession ? View.VISIBLE : View.GONE);
         answer.setPadding(0, dp(22), 0, 0);
         answer.addView(label("答案", 10, MUTED, Typeface.BOLD));
         answer.addView(label(memoryCard.back, 20, INK, Typeface.BOLD));
@@ -855,19 +874,24 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         LinearLayout ratings = new LinearLayout(this);
         ratings.setVisibility(View.GONE);
         ratings.setPadding(0, dp(16), 0, 0);
-        addRating(ratings, reviewCard, memoryCard, "忘记", "again", Color.rgb(197, 67, 55), -1);
-        addRating(ratings, reviewCard, memoryCard, "模糊", "hard", Color.rgb(180, 119, 28), -1);
-        addRating(ratings, reviewCard, memoryCard, "记得", "good", BLUE, 1);
-        addRating(ratings, reviewCard, memoryCard, "轻松", "easy", Color.rgb(40, 132, 93), 1);
+        addRating(ratings, reviewCard, memoryCard, "忘记", "again", Color.rgb(197, 67, 55));
+        addRating(ratings, reviewCard, memoryCard, "模糊", "hard", Color.rgb(180, 119, 28));
+        addRating(ratings, reviewCard, memoryCard, "记得", "good", BLUE);
+        addRating(ratings, reviewCard, memoryCard, "轻松", "easy", Color.rgb(40, 132, 93));
         reviewCard.addView(ratings, fullWrap());
+        if (recordedThisSession) {
+            TextView recorded = label("已记录：" + ratingLabel(savedRating), 12, BLUE, Typeface.BOLD);
+            recorded.setGravity(Gravity.CENTER);
+            recorded.setPadding(0, dp(16), 0, 0);
+            reviewCard.addView(recorded, fullWrap());
+            reveal.setVisibility(View.GONE);
+        }
         reveal.setOnClickListener(view -> {
             view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
             revealReviewAnswer(reveal, answer, ratings, swipeHint, -1);
         });
 
-        ReviewSwipeStage stage = new ReviewSwipeStage(direction ->
-                advanceReview(memoryCard, direction > 0 ? "good" : "again", reviewCard, direction)
-        );
+        ReviewSwipeStage stage = new ReviewSwipeStage((swipedStage, direction) -> navigateReview(direction, swipedStage));
         stage.addView(reviewCard, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ));
@@ -875,6 +899,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         cardParams.topMargin = dp(12);
         body.addView(stage, cardParams);
         setPage(body);
+        animateReviewCardEntrance(stage, cardEntryDirection);
     }
 
     private void revealReviewAnswer(Button reveal, View answer, View ratings, TextView swipeHint, int direction) {
@@ -882,7 +907,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         reveal.setVisibility(View.GONE);
         answer.setVisibility(View.VISIBLE);
         ratings.setVisibility(View.VISIBLE);
-        swipeHint.setText("向左：忘记  ·  向右：记得  ·  也可选择下方等级");
+        swipeHint.setText("左右滑动切换卡片 · 在下方记录回忆结果");
         answer.setAlpha(0f);
         answer.setTranslationX(dp(-18 * direction));
         ratings.setAlpha(0f);
@@ -891,7 +916,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         ratings.animate().alpha(1f).translationX(0f).setStartDelay(70).setDuration(280).setInterpolator(new DecelerateInterpolator()).start();
     }
 
-    private void addRating(LinearLayout parent, LinearLayout reviewCard, MemoryCard memoryCard, String title, String rating, int color, int direction) {
+    private void addRating(LinearLayout parent, LinearLayout reviewCard, MemoryCard memoryCard, String title, String rating, int color) {
         Button button = new Button(this);
         button.setText(title);
         button.setTextSize(11);
@@ -901,49 +926,46 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         applyFlatButtonBehavior(button);
         button.setOnClickListener(view -> {
             view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
-            advanceReview(memoryCard, rating, reviewCard, direction);
+            advanceReview(memoryCard, rating, reviewCard);
         });
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(48), 1);
         params.setMarginEnd(dp(5));
         parent.addView(button, params);
     }
 
-    private void advanceReview(MemoryCard memoryCard, String rating, View reviewCard, int direction) {
+    private void advanceReview(MemoryCard memoryCard, String rating, View reviewCard) {
         if (reviewAdvancing) return;
         reviewAdvancing = true;
         long reviewedAt = reviewPracticeMode
                 ? Math.max(System.currentTimeMillis(), reviewSessionStartedAt + 1)
                 : System.currentTimeMillis();
         db.review(memoryCard.id, rating, reviewedAt);
+        reviewRatings.put(memoryCard.id, rating);
         ReviewNotifications.scheduleNext(this);
         reviewCard.setEnabled(false);
-        reviewEntryDirection = -direction;
-        if (!ValueAnimator.areAnimatorsEnabled()) {
-            showReview();
-            return;
-        }
-        reviewCard.animate()
-                .translationX(direction * Math.max(dp(96), reviewCard.getWidth()))
-                .alpha(0f)
-                .setDuration(230)
-                .setInterpolator(new DecelerateInterpolator())
-                .withEndAction(this::showReview)
-                .start();
+        moveToNextUnratedCard();
+        reviewEntryDirection = 1;
+        animateReviewCardExit(reviewCard, 1, this::showReview);
     }
 
     private interface SwipeListener {
-        void onSwipe(int direction);
+        void onSwipe(ReviewSwipeStage stage, int direction);
     }
 
-    /** Intercepts deliberate horizontal drags while leaving tap targets usable. */
+    /**
+     * Intercepts a small, deliberate horizontal drag while keeping regular taps
+     * (including answer/rating buttons) in the card's normal event path.
+     */
     private final class ReviewSwipeStage extends FrameLayout {
         private final SwipeListener listener;
         private float downX, downY;
         private boolean horizontalGesture;
+        private final int touchSlop;
 
         ReviewSwipeStage(SwipeListener listener) {
             super(MainActivity.this);
             this.listener = listener;
+            this.touchSlop = android.view.ViewConfiguration.get(MainActivity.this).getScaledTouchSlop();
         }
 
         @Override
@@ -957,26 +979,139 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                 case MotionEvent.ACTION_MOVE:
                     float dx = event.getX() - downX;
                     float dy = event.getY() - downY;
-                    if (Math.abs(dx) > dp(18) && Math.abs(dx) > Math.abs(dy)) {
+                    if (Math.abs(dx) > touchSlop && Math.abs(dx) > Math.abs(dy) * 1.15f) {
                         horizontalGesture = true;
+                        getParent().requestDisallowInterceptTouchEvent(true);
                         return true;
                     }
                     break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    return horizontalGesture;
             }
             return false;
         }
 
         @Override
         public boolean onTouchEvent(MotionEvent event) {
-            if (event.getActionMasked() == MotionEvent.ACTION_UP && horizontalGesture) {
-                float dx = event.getX() - downX;
-                if (Math.abs(dx) > dp(64)) {
-                    performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
-                    listener.onSwipe(dx > 0 ? 1 : -1);
-                }
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_MOVE:
+                    if (horizontalGesture) {
+                        float dx = event.getX() - downX;
+                        setTranslationX(dx * 0.32f);
+                        setRotation((dx / Math.max(1f, getWidth())) * 1.2f);
+                        return true;
+                    }
+                    break;
+                case MotionEvent.ACTION_UP:
+                    if (horizontalGesture) {
+                        float dx = event.getX() - downX;
+                        float triggerDistance = Math.max(dp(32), getWidth() * 0.09f);
+                        horizontalGesture = false;
+                        getParent().requestDisallowInterceptTouchEvent(false);
+                        if (Math.abs(dx) >= triggerDistance) {
+                            performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+                            listener.onSwipe(this, dx > 0 ? 1 : -1);
+                        } else {
+                            animate().translationX(0f).rotation(0f).setDuration(160)
+                                    .setInterpolator(new DecelerateInterpolator()).start();
+                        }
+                        return true;
+                    }
+                    break;
+                case MotionEvent.ACTION_CANCEL:
+                    if (horizontalGesture) {
+                        horizontalGesture = false;
+                        getParent().requestDisallowInterceptTouchEvent(false);
+                        animate().translationX(0f).rotation(0f).setDuration(160)
+                                .setInterpolator(new DecelerateInterpolator()).start();
+                        return true;
+                    }
+                    break;
             }
             return horizontalGesture || super.onTouchEvent(event);
         }
+    }
+
+    private void navigateReview(int direction, ReviewSwipeStage stage) {
+        if (reviewAdvancing) return;
+        int targetIndex = reviewCardIndex + direction;
+        if (direction > 0 && targetIndex >= reviewCards.size()) {
+            MemoryCard next = nextUnseenReviewCard();
+            if (next != null) {
+                reviewCards.add(next);
+            } else {
+                nudgeReviewCard(stage, direction);
+                return;
+            }
+        } else if (direction < 0 && targetIndex < 0) {
+            nudgeReviewCard(stage, direction);
+            return;
+        }
+        reviewAdvancing = true;
+        reviewCardIndex = targetIndex;
+        reviewEntryDirection = direction;
+        animateReviewCardExit(stage, direction, this::showReview);
+    }
+
+    private MemoryCard nextUnseenReviewCard() {
+        List<Long> seenIds = new ArrayList<>();
+        for (MemoryCard card : reviewCards) seenIds.add(card.id);
+        return reviewPracticeMode
+                ? db.nextPracticeExcluding(reviewSessionStartedAt, reviewWordbookId, seenIds)
+                : db.nextDueExcluding(System.currentTimeMillis(), reviewWordbookId, seenIds);
+    }
+
+    private void moveToNextUnratedCard() {
+        for (int index = reviewCardIndex + 1; index < reviewCards.size(); index++) {
+            if (!reviewRatings.containsKey(reviewCards.get(index).id)) {
+                reviewCardIndex = index;
+                return;
+            }
+        }
+        MemoryCard next = nextUnseenReviewCard();
+        if (next != null) {
+            reviewCards.add(next);
+            reviewCardIndex = reviewCards.size() - 1;
+            return;
+        }
+        for (int index = 0; index < reviewCardIndex; index++) {
+            if (!reviewRatings.containsKey(reviewCards.get(index).id)) {
+                reviewCardIndex = index;
+                return;
+            }
+        }
+        reviewCardIndex = reviewCards.size();
+    }
+
+    private String ratingLabel(String rating) {
+        if ("again".equals(rating)) return "忘记";
+        if ("hard".equals(rating)) return "模糊";
+        if ("easy".equals(rating)) return "轻松";
+        return "记得";
+    }
+
+    private void animateReviewCardEntrance(View card, int direction) {
+        if (direction == 0) return;
+        card.setAlpha(0f);
+        card.setTranslationX(dp(direction * 72));
+        card.setRotation(direction * 1.1f);
+        card.post(() -> card.animate().alpha(1f).translationX(0f).rotation(0f)
+                .setDuration(280).setInterpolator(new DecelerateInterpolator()).start());
+    }
+
+    private void animateReviewCardExit(View card, int direction, Runnable onEnd) {
+        float distance = Math.max(dp(120), card.getWidth() + dp(36));
+        card.animate().translationX(direction * distance).alpha(0f).rotation(direction * 1.1f)
+                .setDuration(230).setInterpolator(new DecelerateInterpolator())
+                .withEndAction(onEnd).start();
+    }
+
+    private void nudgeReviewCard(View card, int direction) {
+        float nudge = direction * dp(20);
+        card.animate().translationX(nudge).setDuration(90).setInterpolator(new DecelerateInterpolator())
+                .withEndAction(() -> card.animate().translationX(0f).rotation(0f).setDuration(160)
+                        .setInterpolator(new DecelerateInterpolator()).start()).start();
     }
 
     private void showConnect() {

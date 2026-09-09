@@ -1,6 +1,6 @@
 {
   "name": "translation",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "private": true,
   "description": "跨平台全局划词与截图翻译工具",
   "main": "src/main.cjs",
