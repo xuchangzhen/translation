@@ -52,7 +52,12 @@ final class WordbookImportUi {
                 }
                 ImportPreview preview;
                 try (InputStream stream = activity.getContentResolver().openInputStream(uri)) { preview = WordbookImporter.read(stream, name, encoding); }
-                activity.runOnUiThread(() -> { if (alive()) showPreview(preview); });
+                PhoneticEnrichmentResult enrichment;
+                try (PhoneticDictionary dictionary = new PhoneticDictionary(activity.getApplicationContext())) {
+                    enrichment = new WordbookPhoneticEnricher(dictionary).enrich(preview);
+                }
+                PhoneticEnrichmentResult result = enrichment;
+                activity.runOnUiThread(() -> { if (alive()) showPreview(result); });
             } catch (Exception e) {
                 String message = e instanceof IllegalArgumentException ? e.getMessage() : "无法读取文件，请检查文件是否可用并重新选择。";
                 activity.runOnUiThread(() -> {
@@ -74,19 +79,26 @@ final class WordbookImportUi {
         dialog = new AlertDialog.Builder(theme()).setMessage(message).setCancelable(false).show();
     }
     void showPreview(ImportPreview preview) {
+        showPreview(new PhoneticEnrichmentResult(preview, 0, 0, 0, false));
+    }
+    void showPreview(PhoneticEnrichmentResult enrichment) {
+        ImportPreview preview = enrichment.preview;
         if (dialog != null) dialog.dismiss();
         LinearLayout body = new LinearLayout(theme()); body.setOrientation(LinearLayout.VERTICAL);
         int pad = (int) (20 * activity.getResources().getDisplayMetrics().density);
         body.setPadding(pad, pad, pad, pad);
         TextView summary = new TextView(theme());
-        summary.setText("文件：" + preview.fileName + "（" + preview.encoding + "）\n\n检测到 " + preview.detected + " 条词汇\n有效：" + preview.items.size() + "　重复：" + preview.duplicates + "　无效：" + preview.invalid + "\n\n词库名称（同名本地词库会更新内容并保留复习进度）：");
+        String dictionaryNotice = enrichment.dictionaryUnavailable ? "\n本地音标词典不可用，本次未自动补全。" : "";
+        summary.setText("文件：" + preview.fileName + "（" + preview.encoding + "）\n\n检测到 " + preview.detected + " 条词汇\n有效：" + preview.items.size() + "　重复：" + preview.duplicates + "　无效：" + preview.invalid + "\n\n音标\n已有：" + enrichment.existing + "　自动补全：" + enrichment.filled + "　未找到：" + enrichment.missing + dictionaryNotice + "\n\n词库名称（同名本地词库会更新内容并保留复习进度）：");
         body.addView(summary);
         EditText name = new EditText(theme()); name.setSingleLine(true); name.setInputType(InputType.TYPE_CLASS_TEXT); name.setText(preview.name); body.addView(name);
         TextView sample = new TextView(theme());
         StringBuilder text = new StringBuilder("\n预览（最多 8 条）\n");
         for (int i = 0; i < Math.min(8, preview.items.size()); i++) {
             WordbookImporter.Item item = preview.items.get(i);
-            text.append("\n").append(item.front).append("\n").append(item.back).append("\n");
+            text.append("\n").append(item.front);
+            if (!item.phonetic.isEmpty()) text.append("\n").append(item.phonetic);
+            text.append("\n").append(item.back).append("\n");
         }
         sample.setText(text); body.addView(sample);
         ScrollView scroll = new ScrollView(theme()); scroll.addView(body);
@@ -107,7 +119,7 @@ final class WordbookImportUi {
                             if (!alive()) return;
                             dialog.dismiss(); listener.imported(result.wordbookId, title);
                             dialog = new AlertDialog.Builder(theme()).setTitle(title + " 导入完成")
-                                    .setMessage("新增 " + result.added + "\n更新 " + result.updated + "\n忽略 " + result.ignored + "\n无效 " + result.invalid)
+                                    .setMessage("新增 " + result.added + "\n更新 " + result.updated + "\n忽略 " + result.ignored + "\n无效 " + result.invalid + "\n自动补全音标：" + enrichment.filled + "\n未找到音标：" + enrichment.missing)
                                     .setPositiveButton("完成", null).show();
                         });
                     } catch (Exception e) { error(e, "导入失败，未提交本次更改。请检查手机剩余空间后重试。"); }

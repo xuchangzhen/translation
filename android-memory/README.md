@@ -15,6 +15,20 @@
 
 从“词库 → 导入词库”选择 UTF-8 CSV、TSV、TXT 或 JSON，先预览再确认。词库名称默认取 JSON name 或文件名；填写已有本地词库名称可更新释义并保留复习进度。不同词库中的相同单词独立保存。词库显示总词数、待复习数和新词数，支持每页 60 条浏览及限定词库复习。选择本地词库后可点击“同步到已连接的其他设备”，通过独立的 AES-256-GCM 密文分片协议同步；服务器只保存密文，其他 Android 设备自动下载并解密。
 
+自定义词库可以省略 `phonetic` / `ipa` 列。导入时会在后台用内置的 ECDICT 离线音标词典进行标准化后的精确查询并补全空音标；词库自身已有的音标永远优先，不会被覆盖。查不到或本地词典不可用时仍会正常导入，音标保持为空，整个过程不需要联网。
+
+### 重建离线音标词典
+
+生产数据库位于 `app/src/main/assets/phonetics-v1.db`，仅包含 ECDICT 的 `word` 和 `phonetic` 字段。其 APK 内的授权声明位于 `app/src/main/assets/phonetics-v1.notice.txt`，ECDICT 使用 MIT License。需要更新词典时，先从 [ECDICT](https://github.com/skywind3000/ECDICT) 获取 `ecdict.csv`，然后在 `android-memory` 目录执行：
+
+```bash
+python3 tools/build_phonetic_db.py \
+  --source ~/Downloads/ecdict.csv \
+  --output app/src/main/assets/phonetics-v1.db
+```
+
+脚本只使用 Python 标准库，输出写入数量、忽略数量和数据库大小；Gradle 构建不会下载 ECDICT。
+
 本地导入默认不上传服务器，只有点击同步按钮的词库才上传；桌面自动同步固定进入“桌面翻译”。文件选择使用 SAF，不请求存储权限。格式示例与字段别名见根目录 README 的“自定义词库”。
 
 SQLite v1 → v3 迁移保留原卡片 ID、全部复习字段和 review_log；新增 wordbooks 表、`(wordbook_id, sync_key)` 唯一约束及云端版本/本地修改游标。新卡片复用 ReviewScheduler 和系统提醒。本地未上传的修改不会被静默覆盖：下载新云端版本时会保留一个“本地副本”词库。
