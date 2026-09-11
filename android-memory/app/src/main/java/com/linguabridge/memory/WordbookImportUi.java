@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.Context;
 import android.view.ContextThemeWrapper;
+import android.view.View;
 import android.database.Cursor;
 import android.net.Uri;
 import android.provider.OpenableColumns;
@@ -13,6 +14,8 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import java.io.InputStream;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -92,6 +95,24 @@ final class WordbookImportUi {
         summary.setText("文件：" + preview.fileName + "（" + preview.encoding + "）\n\n检测到 " + preview.detected + " 条词汇\n有效：" + preview.items.size() + "　重复：" + preview.duplicates + "　无效：" + preview.invalid + "\n\n音标\n已有：" + enrichment.existing + "　自动补全：" + enrichment.filled + "　未找到：" + enrichment.missing + dictionaryNotice + "\n\n词库名称（同名本地词库会更新内容并保留复习进度）：");
         body.addView(summary);
         EditText name = new EditText(theme()); name.setSingleLine(true); name.setInputType(InputType.TYPE_CLASS_TEXT); name.setText(preview.name); body.addView(name);
+        TextView modeLabel = new TextView(theme());
+        modeLabel.setText("\n内容类型（仅保存设置；导入不会请求 AI）");
+        body.addView(modeLabel);
+        LinearLayout modes = new LinearLayout(theme());
+        modes.setPadding(0, (int) (8 * activity.getResources().getDisplayMetrics().density), 0, 0);
+        String[] contentMode = {"general"};
+        android.widget.Button general = modeButton("普通词汇");
+        android.widget.Button technical = modeButton("技术词汇");
+        android.widget.Button automatic = modeButton("自动识别");
+        View.OnClickListener chooseGeneral = view -> { contentMode[0] = "general"; updateModeButtons(general, technical, automatic, contentMode[0]); };
+        View.OnClickListener chooseTechnical = view -> { contentMode[0] = "technical"; updateModeButtons(general, technical, automatic, contentMode[0]); };
+        View.OnClickListener chooseAutomatic = view -> { contentMode[0] = "auto"; updateModeButtons(general, technical, automatic, contentMode[0]); };
+        general.setOnClickListener(chooseGeneral); technical.setOnClickListener(chooseTechnical); automatic.setOnClickListener(chooseAutomatic);
+        modes.addView(general, new LinearLayout.LayoutParams(0, (int) (40 * activity.getResources().getDisplayMetrics().density), 1));
+        modes.addView(technical, new LinearLayout.LayoutParams(0, (int) (40 * activity.getResources().getDisplayMetrics().density), 1));
+        modes.addView(automatic, new LinearLayout.LayoutParams(0, (int) (40 * activity.getResources().getDisplayMetrics().density), 1));
+        updateModeButtons(general, technical, automatic, contentMode[0]);
+        body.addView(modes);
         TextView sample = new TextView(theme());
         StringBuilder text = new StringBuilder("\n预览（最多 8 条）\n");
         for (int i = 0; i < Math.min(8, preview.items.size()); i++) {
@@ -112,7 +133,7 @@ final class WordbookImportUi {
                 busy("正在导入，请稍候…");
                 worker.execute(() -> {
                     try (MemoryDb db = new MemoryDb(activity.getApplicationContext())) {
-                        MemoryDb.WordbookImportResult result = db.importWordbook(preview, title);
+                        MemoryDb.WordbookImportResult result = db.importWordbook(preview, title, contentMode[0]);
                         try { ReviewNotifications.scheduleNext(activity.getApplicationContext()); }
                         catch (RuntimeException reminderUnavailable) { /* Import has committed; reminder availability must not report it as failed. */ }
                         activity.runOnUiThread(() -> {
@@ -133,6 +154,27 @@ final class WordbookImportUi {
             if (dialog != null) dialog.dismiss();
             dialog = new AlertDialog.Builder(theme()).setTitle("无法导入词库").setMessage(message).setPositiveButton("知道了", null).show();
         });
+    }
+
+    private android.widget.Button modeButton(String text) {
+        android.widget.Button button = new android.widget.Button(theme());
+        button.setText(text); button.setTextSize(10); button.setAllCaps(false); button.setPadding(0, 0, 0, 0);
+        return button;
+    }
+
+    private void updateModeButtons(android.widget.Button general, android.widget.Button technical, android.widget.Button automatic, String selected) {
+        applyModeButton(general, "general".equals(selected));
+        applyModeButton(technical, "technical".equals(selected));
+        applyModeButton(automatic, "auto".equals(selected));
+    }
+
+    private void applyModeButton(android.widget.Button button, boolean selected) {
+        boolean dark = (activity.getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+        int accent = dark ? Color.rgb(174, 124, 255) : Color.rgb(126, 76, 181);
+        int surface = dark ? Color.rgb(34, 28, 46) : Color.rgb(246, 241, 249);
+        GradientDrawable background = new GradientDrawable(); background.setCornerRadius(12 * activity.getResources().getDisplayMetrics().density);
+        background.setColor(selected ? accent : surface); background.setStroke((int) activity.getResources().getDisplayMetrics().density, selected ? accent : (dark ? Color.rgb(48, 41, 61) : Color.rgb(235, 228, 239)));
+        button.setTextColor(selected ? Color.WHITE : accent); button.setBackground(background);
     }
     void destroy() { if (dialog != null) dialog.dismiss(); worker.shutdown(); }
 }

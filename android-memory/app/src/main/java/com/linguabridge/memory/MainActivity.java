@@ -3,6 +3,7 @@ package com.linguabridge.memory;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.Dialog;
 import android.animation.AnimatorSet;
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
@@ -14,6 +15,7 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.content.res.ColorStateList;
 import android.content.pm.PackageManager;
@@ -25,10 +27,12 @@ import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.ColorDrawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.speech.tts.TextToSpeech;
 import android.text.InputType;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
@@ -54,8 +58,11 @@ import java.util.Map;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.UUID;
 
 public final class MainActivity extends Activity implements TextToSpeech.OnInitListener {
+    private static final String AI_LOG_TAG = "LinguaBridgeAI";
+    private static final String AI_RUN_PREFS = "ai_enrichment_runs";
     private static final int CARD_CORNER_RADIUS_DP = 24;
     private static final int STAT_CARD_CORNER_RADIUS_DP = 22;
     private static final int INSET_SURFACE_CORNER_RADIUS_DP = 14;
@@ -76,6 +83,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private MemoryDb db;
     private WordbookImportUi wordbookImport;
+    private AiConfigStore aiConfigStore;
     private long libraryWordbookId = 0, reviewWordbookId = 0;
     private String libraryWordbookName = "全部";
     private int libraryOffset = 0;
@@ -95,6 +103,9 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
     private boolean reviewAdvancing;
     private boolean reviewCardSwitching;
     private boolean suppressNextPageAnimation;
+    /** The wordbook that was just pinned/unpinned, so its new position can arrive visibly. */
+    private long managementAnimatedWordbookId = -1;
+    private boolean managementAnimatedAsPinned;
     private int reviewSessionTotal;
     private int reviewProgressAnimationStart;
     private boolean animateReviewProgress;
@@ -102,7 +113,34 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
     /** Cards encountered in this session. Keeping this small, growing history makes swipe-back predictable. */
     private final List<MemoryCard> reviewCards = new ArrayList<>();
     private final Map<Long, String> reviewRatings = new HashMap<>();
+    private final Map<Long, ReviewBaseline> reviewBaselines = new HashMap<>();
+    private final Map<Dialog, LinearLayout> panelShells = new HashMap<>();
     private int reviewCardIndex = -1;
+    private String reviewSessionId = "";
+    private long revealedReviewCardId = -1;
+    private boolean aiTaskRunning;
+    private long aiTaskWordbookId;
+    private int aiTaskRequested;
+    private int aiTaskProcessed;
+    private int aiTaskCompleted;
+    private TextView aiStatusView;
+    private TextView aiProgressView;
+    private ProgressBar aiProgressBar;
+    private TextView aiTaskProgressView;
+    private ProgressBar aiTaskProgressBar;
+    private TextView aiRunStateView;
+    private TextView aiCompletionSummaryView;
+    private TextView aiCompletedMetricView;
+    private TextView aiProcessingMetricView;
+    private TextView aiPendingMetricView;
+    private Button aiCompletionButtonView;
+    private Dialog aiProgressDialog;
+    private long aiProgressDialogWordbookId = -1;
+    private TextView aiDialogPercentView;
+    private TextView aiDialogSummaryView;
+    private TextView aiDialogDetailView;
+    private ProgressBar aiDialogProgressBar;
+    private final Map<Long, AiEnrichmentStats> aiStatsCache = new HashMap<>();
 
     private final BroadcastReceiver syncReceiver = new BroadcastReceiver() {
         @Override
@@ -121,8 +159,9 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         applyPalette();
         db = new MemoryDb(this);
         wordbookImport = new WordbookImportUi(this, (id, name) -> {
-            libraryWordbookId = id; libraryWordbookName = name; libraryOffset = 0; showLibrary();
+            libraryWordbookId = id; libraryWordbookName = name; libraryOffset = 0; showLibrary(); runPhoneticBackfill();
         });
+        aiConfigStore = new AiConfigStore(this);
         secureStore = new SecureStore(this);
         textToSpeech = new TextToSpeech(this, this);
         ReviewNotifications.createChannels(this);
@@ -131,6 +170,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         setContentView(rootHost);
         buildShell();
         registerSyncReceiver();
+        runPhoneticBackfill();
         AppUpdateManager.checkAsync(this, false);
         boolean pairingIntent = handlePairingIntent(getIntent());
         if (!pairingIntent && secureStore.load() != null) CloudSyncService.start(this);
@@ -477,6 +517,12 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
 
     private void showLibrary() {
         selectPage("library");
+        aiStatusView = null;
+        aiProgressView = null;
+        aiProgressBar = null;
+        aiTaskProgressView = null;
+        aiTaskProgressBar = null;
+        aiCompletionButtonView = null;
         LinearLayout body = pageBody();
         long now = System.currentTimeMillis();
         MemoryDb.Stats stats = db.stats(now);
@@ -485,6 +531,11 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         LinearLayout heading = new LinearLayout(this);
         heading.setGravity(Gravity.CENTER_VERTICAL | Gravity.BOTTOM);
         heading.addView(title("我的词库", 29), weighted());
+        Button aiSettingsShortcut = linkButton("AI服务");
+        aiSettingsShortcut.setTextColor(LILAC);
+        aiSettingsShortcut.setContentDescription("修改 AI 服务和模型");
+        aiSettingsShortcut.setOnClickListener(view -> showAiSettingsPanel());
+        heading.addView(aiSettingsShortcut, new LinearLayout.LayoutParams(dp(64), dp(44)));
         Button importButton = importWordbookButton();
         importButton.setOnClickListener(view -> wordbookImport.choose());
         heading.addView(importButton, new LinearLayout.LayoutParams(dp(110), dp(44)));
@@ -517,16 +568,22 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         for (Wordbook book : wordbooks) {
             LinearLayout.LayoutParams selectorParams = fullWrap();
             selectorParams.topMargin = dp(9);
-            wordbookList.addView(wordbookSelector(
+            View selector = wordbookSelector(
                     book.name,
-                    book.id == 1 ? "桌面翻译自动接收" : "自定义词库 · 本地保存",
+                    book.id == 1 ? "桌面翻译自动接收" : (book.pinnedAt > 0 ? "自定义词库 · 已置顶" : "自定义词库 · 本地保存"),
                     book.total, book.due, book.fresh,
                     libraryWordbookId == book.id,
                     book.id == 1 ? "桌" : "词",
                     book.id == 1 ? CORAL : LILAC,
                     () -> selectLibraryWordbook(book.id, book.name)
-            ), selectorParams);
+            );
+            // Only custom books opt into the horizontal action row. The shared ScrollView keeps
+            // vertical ownership until a clearly horizontal left drag is detected.
+            View wordbookItem = book.id > 1 ? new WordbookSwipeActionRow(book, selector) : selector;
+            wordbookList.addView(wordbookItem, selectorParams);
+            if (book.id == managementAnimatedWordbookId) animateManagedWordbookArrival(wordbookItem, managementAnimatedAsPinned);
         }
+        managementAnimatedWordbookId = -1;
         overview.addView(wordbookScroll, fullHeight(248));
 
         LinearLayout.LayoutParams overviewParams = fullWrap();
@@ -547,6 +604,30 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         selected.addView(librarySummary(libraryWordbookId == 0 ? stats.total : selectedWordbookTotal(wordbooks),
                 libraryWordbookId == 0 ? stats.due : selectedWordbookDue(wordbooks),
                 libraryWordbookId == 0 ? stats.fresh : selectedWordbookFresh(wordbooks)));
+        if (libraryWordbookId > 0) {
+            LinearLayout aiStatus = aiEnrichmentStatus();
+            LinearLayout.LayoutParams aiStatusParams = fullWrap();
+            aiStatusParams.topMargin = dp(15);
+            selected.addView(aiStatus, aiStatusParams);
+            Button complete = aiCompletionButton();
+            complete.setOnClickListener(view -> {
+                if (aiTaskRunning && aiTaskWordbookId == libraryWordbookId) {
+                    showAiProgressPanel(libraryWordbookId, libraryWordbookName);
+                } else {
+                    showAiCompletionPicker(selectedWordbookMode(wordbooks));
+                }
+            });
+            LinearLayout.LayoutParams completeParams = fullHeight(46);
+            completeParams.topMargin = dp(10);
+            selected.addView(complete, completeParams);
+            Button aiSettings = paginationButton("⚙  修改 AI 服务与模型");
+            aiSettings.setContentDescription("修改 AI 服务地址、API Key 或补全模型");
+            aiSettings.setOnClickListener(view -> showAiSettingsPanel());
+            LinearLayout.LayoutParams settingsParams = fullHeight(40);
+            settingsParams.topMargin = dp(7);
+            selected.addView(aiSettings, settingsParams);
+            loadAiStatsAsync(libraryWordbookId);
+        }
         Button study = primaryButton("开始学习 / 开始复习");
         study.setOnClickListener(view -> beginReview(libraryWordbookId));
         LinearLayout.LayoutParams studyParams = fullHeight(50);
@@ -593,6 +674,30 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         showLibrary();
     }
 
+    /** Re-sort management changes after the drawer closes, without replaying page entrance animation. */
+    private void refreshLibraryAfterManagementChange(long wordbookId, boolean pinned) {
+        managementAnimatedWordbookId = wordbookId;
+        managementAnimatedAsPinned = pinned;
+        suppressNextPageAnimation = true;
+        content.post(this::showLibrary);
+    }
+
+    /** Gives the moved row a short arrival motion at its newly sorted position. */
+    private void animateManagedWordbookArrival(View item, boolean pinned) {
+        item.setAlpha(0f);
+        item.setScaleX(0.97f);
+        item.setScaleY(0.97f);
+        item.setTranslationY(dp(pinned ? 18 : -12));
+        item.post(() -> item.animate()
+                .alpha(1f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .translationY(0f)
+                .setDuration(280)
+                .setInterpolator(new DecelerateInterpolator())
+                .start());
+    }
+
     private String currentLibraryScope() {
         if (libraryWordbookId == 0) return "全部词库";
         return libraryWordbookId == 1 ? "桌面同步" : "自定义词库";
@@ -611,6 +716,11 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
     private int selectedWordbookFresh(List<Wordbook> wordbooks) {
         for (Wordbook book : wordbooks) if (book.id == libraryWordbookId) return book.fresh;
         return 0;
+    }
+
+    private String selectedWordbookMode(List<Wordbook> wordbooks) {
+        for (Wordbook book : wordbooks) if (book.id == libraryWordbookId) return book.contentMode;
+        return "general";
     }
 
     private Button importWordbookButton() {
@@ -638,6 +748,629 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         button.setContentDescription("将当前词库加密同步到已连接的设备");
         applyFlatButtonBehavior(button);
         return button;
+    }
+
+    private Button aiCompletionButton() {
+        Button button = new Button(this);
+        button.setTextSize(11);
+        button.setAllCaps(false);
+        button.setTextColor(LILAC);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setBackground(rounded(withAlpha(LILAC, darkMode ? 38 : 18), 14, withAlpha(LILAC, darkMode ? 110 : 76)));
+        button.setContentDescription("为当前词库补全 AI 学习内容");
+        applyFlatButtonBehavior(button);
+        aiCompletionButtonView = button;
+        updateAiCompletionButton();
+        return button;
+    }
+
+    private void updateAiCompletionButton() {
+        // This is also called while the button is being constructed, before it is attached.
+        // Requiring attachment left its otherwise styled slot blank on the first library render.
+        if (aiCompletionButtonView == null) return;
+        boolean thisWordbookIsRunning = aiTaskRunning && aiTaskWordbookId == libraryWordbookId;
+        aiCompletionButtonView.setText(thisWordbookIsRunning ? "◉  查看 AI 补全进度" : "✦  AI 补全");
+        aiCompletionButtonView.setEnabled(!aiTaskRunning || thisWordbookIsRunning);
+        aiCompletionButtonView.setContentDescription(thisWordbookIsRunning
+                ? "查看当前词库的 AI 补全进度" : "为当前词库补全 AI 学习内容");
+    }
+
+    private LinearLayout aiEnrichmentStatus() {
+        LinearLayout status = vertical(0);
+        applyInsetSurfaceStyle(status, 16);
+        status.setPadding(dp(13), dp(11), dp(13), dp(11));
+        status.setClickable(true);
+        status.setOnClickListener(view -> showAiProgressPanel(libraryWordbookId, libraryWordbookName));
+        LinearLayout heading = new LinearLayout(this);
+        heading.setGravity(Gravity.CENTER_VERTICAL);
+        heading.addView(label("AI 补全进度", 11, INK, Typeface.BOLD), weighted());
+        TextView runState = label("正在统计…", 10, LILAC, Typeface.BOLD);
+        aiRunStateView = runState;
+        heading.addView(runState);
+        status.addView(heading);
+
+        LinearLayout totalRow = new LinearLayout(this);
+        totalRow.setGravity(Gravity.BOTTOM | Gravity.CENTER_VERTICAL);
+        TextView value = label("0%", 22, LILAC, Typeface.BOLD);
+        value.setIncludeFontPadding(false);
+        aiStatusView = value;
+        totalRow.addView(value);
+        TextView totalCaption = label("  已补全 0 / 0", 10, MUTED, Typeface.NORMAL);
+        totalCaption.setPadding(0, 0, 0, dp(2));
+        aiCompletionSummaryView = totalCaption;
+        totalRow.addView(totalCaption);
+        status.addView(totalRow);
+
+        ProgressBar progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progress.setMax(1);
+        progress.setProgress(0);
+        progress.setProgressTintList(ColorStateList.valueOf(LILAC));
+        progress.setProgressBackgroundTintList(ColorStateList.valueOf(withAlpha(LILAC, darkMode ? 44 : 28)));
+        LinearLayout.LayoutParams progressParams = fullHeight(8);
+        progressParams.topMargin = dp(9);
+        status.addView(progress, progressParams);
+        aiProgressBar = progress;
+
+        TextView taskProgress = label("", 9, LILAC, Typeface.BOLD);
+        taskProgress.setVisibility(View.GONE);
+        LinearLayout.LayoutParams taskTextParams = fullWrap();
+        taskTextParams.topMargin = dp(8);
+        status.addView(taskProgress, taskTextParams);
+        aiTaskProgressView = taskProgress;
+
+        ProgressBar taskBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        taskBar.setMax(1);
+        taskBar.setProgress(0);
+        taskBar.setProgressTintList(ColorStateList.valueOf(LILAC));
+        taskBar.setIndeterminateTintList(ColorStateList.valueOf(LILAC));
+        taskBar.setProgressBackgroundTintList(ColorStateList.valueOf(withAlpha(LILAC, darkMode ? 44 : 28)));
+        taskBar.setVisibility(View.GONE);
+        LinearLayout.LayoutParams taskBarParams = fullHeight(5);
+        taskBarParams.topMargin = dp(4);
+        status.addView(taskBar, taskBarParams);
+        aiTaskProgressBar = taskBar;
+
+        LinearLayout metrics = new LinearLayout(this);
+        metrics.setPadding(0, dp(10), 0, 0);
+        TextView completed = label("0", 15, MINT, Typeface.BOLD);
+        TextView processing = label("0", 15, LILAC, Typeface.BOLD);
+        TextView pending = label("0", 15, INK, Typeface.BOLD);
+        aiCompletedMetricView = completed;
+        aiProcessingMetricView = processing;
+        aiPendingMetricView = pending;
+        metrics.addView(aiProgressMetric("已完成", completed, MINT), weighted());
+        metrics.addView(aiProgressMetric("处理中", processing, LILAC), weighted());
+        metrics.addView(aiProgressMetric("待补全", pending, MUTED), weighted());
+        status.addView(metrics);
+
+        TextView detail = label("轻触此卡片可查看补全详情。", 9, MUTED, Typeface.NORMAL);
+        detail.setPadding(0, dp(8), 0, 0);
+        aiProgressView = detail;
+        status.addView(detail);
+        return status;
+    }
+
+    private LinearLayout aiProgressMetric(String caption, TextView value, int captionColor) {
+        LinearLayout column = vertical(0);
+        column.addView(value);
+        column.addView(label(caption, 9, captionColor, Typeface.NORMAL));
+        return column;
+    }
+
+    private void loadAiStatsAsync(long wordbookId) {
+        if (wordbookId <= 0) return;
+        io.execute(() -> {
+            try (MemoryDb local = new MemoryDb(getApplicationContext())) {
+                AiEnrichmentStats stats = local.aiStats(wordbookId);
+                runOnUiThread(() -> updateAiStatusViews(wordbookId, stats, aiTaskProcessed, aiTaskRequested));
+            }
+        });
+    }
+
+    /** Updates the progress views only; it never rebuilds the scroll page during a batch. */
+    private void updateAiStatusViews(long wordbookId, AiEnrichmentStats stats, int processed, int requested) {
+        if (stats == null) return;
+        aiStatsCache.put(wordbookId, stats);
+        updateAiProgressDialog(wordbookId, stats, processed, requested);
+        if (libraryWordbookId != wordbookId || aiStatusView == null || !aiStatusView.isAttachedToWindow()) return;
+        boolean running = aiTaskRunning && aiTaskWordbookId == wordbookId;
+        int percent = stats.total == 0 ? 0 : Math.round(stats.complete * 100f / stats.total);
+        aiStatusView.setText(percent + "%");
+        if (aiCompletionSummaryView != null && aiCompletionSummaryView.isAttachedToWindow()) {
+            aiCompletionSummaryView.setText("  已补全 " + stats.complete + " / " + stats.total);
+        }
+        if (aiRunStateView != null && aiRunStateView.isAttachedToWindow()) {
+            if (running) {
+                aiRunStateView.setText("补全中");
+                aiRunStateView.setTextColor(LILAC);
+            } else if (stats.error > 0) {
+                aiRunStateView.setText("需要重试");
+                aiRunStateView.setTextColor(CORAL);
+            } else if (stats.total > 0 && stats.complete == stats.total) {
+                aiRunStateView.setText("已完成");
+                aiRunStateView.setTextColor(MINT);
+            } else {
+                aiRunStateView.setText("待开始");
+                aiRunStateView.setTextColor(MUTED);
+            }
+        }
+        if (aiCompletedMetricView != null && aiCompletedMetricView.isAttachedToWindow()) aiCompletedMetricView.setText(String.valueOf(stats.complete));
+        if (aiProcessingMetricView != null && aiProcessingMetricView.isAttachedToWindow()) aiProcessingMetricView.setText(String.valueOf(stats.processing));
+        if (aiPendingMetricView != null && aiPendingMetricView.isAttachedToWindow()) aiPendingMetricView.setText(String.valueOf(stats.retryable()));
+        if (aiProgressBar != null && aiProgressBar.isAttachedToWindow()) {
+            setAiProgress(aiProgressBar, stats.total, stats.complete);
+        }
+        updateAiTaskProgress(running, stats, processed, requested);
+        if (aiProgressView != null && aiProgressView.isAttachedToWindow()) {
+            if (running) {
+                aiProgressView.setText("本次任务 " + Math.min(processed, requested) + " / " + requested
+                        + " · 已写入 " + aiTaskCompleted + " 条 · 可继续浏览和学习");
+            } else if (stats.error > 0) {
+                aiProgressView.setText("待补全 " + stats.retryable() + " 条 · " + stats.error + " 条失败，可再次补全重试");
+            } else {
+                aiProgressView.setText(stats.retryable() == 0 ? "AI 内容已补全。" : "待补全 " + stats.retryable() + " 条 · 可按需补全");
+            }
+        }
+    }
+
+    /** Separates current-run liveness from the long-lived wordbook completion percentage. */
+    private void updateAiTaskProgress(boolean running, AiEnrichmentStats stats, int processed, int requested) {
+        if (aiTaskProgressView == null || aiTaskProgressBar == null
+                || !aiTaskProgressView.isAttachedToWindow() || !aiTaskProgressBar.isAttachedToWindow()) return;
+        if (!running || requested <= 0) {
+            aiTaskProgressView.setVisibility(View.GONE);
+            aiTaskProgressBar.setIndeterminate(false);
+            aiTaskProgressBar.setVisibility(View.GONE);
+            return;
+        }
+        int handled = Math.min(Math.max(0, requested), Math.max(0, processed));
+        aiTaskProgressView.setVisibility(View.VISIBLE);
+        aiTaskProgressBar.setVisibility(View.VISIBLE);
+        if (stats.processing > 0) {
+            aiTaskProgressView.setText("本次补全 " + handled + " / " + requested + " · 正在生成 " + stats.processing + " 条");
+            aiTaskProgressBar.setIndeterminate(true);
+        } else {
+            aiTaskProgressView.setText("本次补全 " + handled + " / " + requested + " · 正在写入结果");
+            aiTaskProgressBar.setIndeterminate(false);
+            setAiProgress(aiTaskProgressBar, requested, handled);
+        }
+    }
+
+    private void setAiProgress(ProgressBar progress, int total, int complete) {
+        int max = Math.max(1, total);
+        int target = Math.min(max, Math.max(0, complete));
+        progress.setMax(max);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) progress.setProgress(target, true);
+        else progress.setProgress(target);
+    }
+
+    /** Opens a live, lightweight view of the background task without interrupting it. */
+    private void showAiProgressPanel(long wordbookId, String wordbookName) {
+        if (wordbookId <= 0) return;
+        restoreLastAiRun(wordbookId);
+        if (aiProgressDialog != null && aiProgressDialog.isShowing() && aiProgressDialogWordbookId == wordbookId) return;
+        LinearLayout body = vertical(0);
+        body.addView(label(wordbookName, 13, INK, Typeface.BOLD));
+        TextView percent = label("0%", 30, LILAC, Typeface.BOLD);
+        percent.setPadding(0, dp(14), 0, 0);
+        percent.setIncludeFontPadding(false);
+        body.addView(percent);
+        TextView summary = label("已补全 0 / 0", 11, MUTED, Typeface.NORMAL);
+        summary.setPadding(0, dp(3), 0, 0);
+        body.addView(summary);
+        ProgressBar progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progress.setProgressTintList(ColorStateList.valueOf(LILAC));
+        progress.setProgressBackgroundTintList(ColorStateList.valueOf(withAlpha(LILAC, darkMode ? 44 : 28)));
+        LinearLayout.LayoutParams progressParams = fullHeight(9);
+        progressParams.topMargin = dp(13);
+        body.addView(progress, progressParams);
+        TextView detail = label("正在准备补全任务…", 11, MUTED, Typeface.NORMAL);
+        detail.setPadding(0, dp(12), 0, 0);
+        body.addView(detail);
+        TextView hint = label("关闭此窗口不会取消任务；词库总进度显示在主页面。", 9, MUTED, Typeface.NORMAL);
+        hint.setPadding(0, dp(8), 0, 0);
+        body.addView(hint);
+
+        Dialog dialog = panel("AI 补全进度", body);
+        Button close = primaryButton("关闭");
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.addView(close, new LinearLayout.LayoutParams(0, dp(48), 1));
+        addPanelButtons(dialog, buttons);
+        close.setOnClickListener(view -> dialog.dismiss());
+        dialog.setOnDismissListener(ignored -> {
+            panelShells.remove(dialog);
+            if (aiProgressDialog == dialog) {
+                aiProgressDialog = null;
+                aiProgressDialogWordbookId = -1;
+                aiDialogPercentView = null;
+                aiDialogSummaryView = null;
+                aiDialogDetailView = null;
+                aiDialogProgressBar = null;
+            }
+        });
+        aiProgressDialog = dialog;
+        aiProgressDialogWordbookId = wordbookId;
+        aiDialogPercentView = percent;
+        aiDialogSummaryView = summary;
+        aiDialogDetailView = detail;
+        aiDialogProgressBar = progress;
+        dialog.show();
+        AiEnrichmentStats cached = aiStatsCache.get(wordbookId);
+        updateAiProgressDialog(wordbookId, cached == null ? new AiEnrichmentStats(0, 0, 0, 0, 0) : cached,
+                aiTaskProcessed, aiTaskRequested);
+    }
+
+    private void updateAiProgressDialog(long wordbookId, AiEnrichmentStats stats, int processed, int requested) {
+        if (aiProgressDialog == null || aiProgressDialogWordbookId != wordbookId || !aiProgressDialog.isShowing()
+                || aiDialogPercentView == null || aiDialogProgressBar == null) return;
+        boolean sameRun = aiTaskWordbookId == wordbookId && aiTaskRequested > 0;
+        int runRequested = sameRun ? aiTaskRequested : requested;
+        int runProcessed = sameRun ? (aiTaskRunning ? processed : aiTaskProcessed) : 0;
+        int runCompleted = sameRun ? aiTaskCompleted : 0;
+        if (sameRun) {
+            int percent = runRequested == 0 ? 0 : Math.round(Math.min(runRequested, runProcessed) * 100f / runRequested);
+            aiDialogPercentView.setText(percent + "%");
+            if (aiDialogSummaryView != null) {
+                aiDialogSummaryView.setText("本次补全 " + Math.min(runProcessed, runRequested) + " / " + runRequested
+                        + " · 已写入 " + runCompleted + " 条");
+            }
+            setAiProgress(aiDialogProgressBar, runRequested, runProcessed);
+        } else {
+            int percent = stats.total == 0 ? 0 : Math.round(stats.complete * 100f / stats.total);
+            aiDialogPercentView.setText(percent + "%");
+            if (aiDialogSummaryView != null) {
+                aiDialogSummaryView.setText("本次补全尚未开始 · 词库已补全 " + stats.complete + " / " + stats.total);
+            }
+            setAiProgress(aiDialogProgressBar, 1, 0);
+        }
+        if (aiDialogDetailView != null) {
+            if (sameRun && aiTaskRunning) {
+                aiDialogDetailView.setText("正在补全 · 已处理 " + Math.min(runProcessed, runRequested) + " / " + runRequested
+                        + " · 词库总进度 " + stats.complete + " / " + stats.total);
+            } else if (sameRun) {
+                int failed = Math.max(0, runProcessed - runCompleted);
+                aiDialogDetailView.setText("本次任务已结束 · 已写入 " + runCompleted + " 条"
+                        + (failed == 0 ? "。" : " · " + failed + " 条失败，可再次补全重试。"));
+            } else if (stats.error > 0) {
+                aiDialogDetailView.setText("暂无本次任务 · 历史失败 " + stats.error + " 条，可点击 AI 补全重试。");
+            } else if (stats.total > 0 && stats.complete == stats.total) {
+                aiDialogDetailView.setText("暂无本次任务 · 词库内容已全部补全。");
+            } else {
+                aiDialogDetailView.setText("暂无本次任务；可关闭后点击 AI 补全选择数量。");
+            }
+        }
+    }
+
+    /** Keeps the latest per-wordbook run visible after navigating away or restarting the activity. */
+    private String aiRunKey(long wordbookId, String field) {
+        return "wordbook_" + wordbookId + "_" + field;
+    }
+
+    private void rememberLastAiRun(long wordbookId, int requested, int processed, int completed) {
+        if (wordbookId <= 0 || requested <= 0) return;
+        SharedPreferences.Editor editor = getSharedPreferences(AI_RUN_PREFS, MODE_PRIVATE).edit();
+        editor.putInt(aiRunKey(wordbookId, "requested"), Math.max(0, requested));
+        editor.putInt(aiRunKey(wordbookId, "processed"), Math.max(0, processed));
+        editor.putInt(aiRunKey(wordbookId, "completed"), Math.max(0, completed));
+        editor.apply();
+    }
+
+    private void restoreLastAiRun(long wordbookId) {
+        if (aiTaskRunning || (aiTaskWordbookId == wordbookId && aiTaskRequested > 0)) return;
+        SharedPreferences preferences = getSharedPreferences(AI_RUN_PREFS, MODE_PRIVATE);
+        int requested = preferences.getInt(aiRunKey(wordbookId, "requested"), 0);
+        if (requested <= 0) return;
+        aiTaskWordbookId = wordbookId;
+        aiTaskRequested = requested;
+        aiTaskProcessed = preferences.getInt(aiRunKey(wordbookId, "processed"), 0);
+        aiTaskCompleted = preferences.getInt(aiRunKey(wordbookId, "completed"), 0);
+    }
+
+    private void showAiCompletionPicker(String contentMode) {
+        if (libraryWordbookId <= 0) {
+            Toast.makeText(this, "请先选择一个具体词库", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (aiTaskRunning) {
+            Toast.makeText(this, "AI 补全正在进行中", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        AiConfig config = aiConfigStore.load();
+        if (config == null) {
+            Toast.makeText(this, "请先配置 AI 服务", Toast.LENGTH_LONG).show();
+            showAiSettingsPanel();
+            return;
+        }
+        long wordbookId = libraryWordbookId;
+        String wordbookName = libraryWordbookName;
+        io.execute(() -> {
+            try (MemoryDb local = new MemoryDb(getApplicationContext())) {
+                AiEnrichmentStats stats = local.aiStats(wordbookId);
+                runOnUiThread(() -> {
+                    if (!isFinishing() && !isDestroyed()) showAiQuantityPanel(wordbookId, wordbookName, contentMode, stats, config);
+                });
+            }
+        });
+    }
+
+    private void showAiQuantityPanel(long wordbookId, String wordbookName, String contentMode, AiEnrichmentStats stats, AiConfig config) {
+        int remaining = stats.retryable();
+        if (remaining <= 0) {
+            Toast.makeText(this, stats.processing > 0 ? "仍有补全任务在处理" : "这个词库已经没有待补全词条", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        LinearLayout body = vertical(0);
+        body.addView(label("当前词库：" + wordbookName, 13, INK, Typeface.BOLD));
+        TextView summary = label("总词条：" + stats.total + "\n已补全：" + stats.complete + "\n待补全：" + remaining, 11, MUTED, Typeface.NORMAL);
+        summary.setPadding(0, dp(8), 0, 0);
+        body.addView(summary);
+        body.addView(fieldLabel("本次补全数量"));
+        final int[] selected = {Math.min(20, remaining)};
+        TextView chosen = label("本次将补全 " + selected[0] + " 条", 11, LILAC, Typeface.BOLD);
+        LinearLayout choices = new LinearLayout(this);
+        choices.setPadding(0, dp(7), 0, 0);
+        for (int amount : new int[]{20, 50, 100}) {
+            Button choice = quantityButton(String.valueOf(amount));
+            choice.setOnClickListener(view -> { selected[0] = Math.min(amount, remaining); chosen.setText("本次将补全 " + selected[0] + " 条"); });
+            choices.addView(choice, new LinearLayout.LayoutParams(0, dp(40), 1));
+        }
+        Button all = quantityButton("全部剩余");
+        all.setOnClickListener(view -> { selected[0] = remaining; chosen.setText("本次将补全剩余 " + remaining + " 条"); });
+        LinearLayout.LayoutParams allParams = fullHeight(40); allParams.topMargin = dp(7);
+        body.addView(choices); body.addView(all, allParams);
+        EditText custom = input("自定义正整数，例如 35", false);
+        custom.setInputType(InputType.TYPE_CLASS_NUMBER);
+        LinearLayout.LayoutParams customParams = fullHeight(48); customParams.topMargin = dp(8);
+        body.addView(custom, customParams);
+        chosen.setPadding(0, dp(9), 0, 0); body.addView(chosen);
+
+        Dialog dialog = panel("AI 补全", body);
+        LinearLayout buttons = new LinearLayout(this);
+        Button cancel = linkButton("取消");
+        Button start = primaryButton("开始补全");
+        buttons.addView(cancel, new LinearLayout.LayoutParams(0, dp(48), 1));
+        LinearLayout.LayoutParams startParams = new LinearLayout.LayoutParams(0, dp(48), 1); startParams.setMarginStart(dp(8));
+        buttons.addView(start, startParams);
+        addPanelButtons(dialog, buttons);
+        cancel.setOnClickListener(view -> dialog.dismiss());
+        start.setOnClickListener(view -> {
+            int count = selected[0];
+            String entered = custom.getText().toString().trim();
+            if (!entered.isEmpty()) {
+                try { count = Integer.parseInt(entered); }
+                catch (NumberFormatException ignored) { count = 0; }
+            }
+            if (count <= 0) { custom.setError("请输入正整数"); return; }
+            if (count > remaining) {
+                count = remaining;
+                custom.setText(String.valueOf(count));
+                chosen.setText("本次将补全剩余 " + count + " 条");
+                Toast.makeText(this, "数量已调整为剩余 " + count + " 条", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            dialog.dismiss();
+            startAiEnrichment(wordbookId, contentMode, count, config);
+        });
+        dialog.show();
+    }
+
+    private Button quantityButton(String text) {
+        Button button = new Button(this);
+        button.setText(text); button.setTextSize(10); button.setAllCaps(false); button.setTextColor(LILAC);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setBackground(rounded(withAlpha(LILAC, darkMode ? 34 : 17), 12, withAlpha(LILAC, darkMode ? 95 : 60)));
+        applyFlatButtonBehavior(button);
+        return button;
+    }
+
+    private void startAiEnrichment(long wordbookId, String contentMode, int count, AiConfig config) {
+        if (aiTaskRunning) return;
+        aiTaskRunning = true;
+        aiTaskWordbookId = wordbookId;
+        aiTaskRequested = count;
+        aiTaskProcessed = 0;
+        aiTaskCompleted = 0;
+        updateAiCompletionButton();
+        AiEnrichmentStats cachedStats = aiStatsCache.get(wordbookId);
+        if (cachedStats != null) updateAiStatusViews(wordbookId, cachedStats, 0, count);
+        if (libraryWordbookId == wordbookId && aiProgressView != null && aiProgressView.isAttachedToWindow()) {
+            aiProgressView.setText("正在连接 AI 服务…本次将补全 " + count + " 条");
+        }
+        io.execute(() -> {
+            AiEnrichmentRunner.Outcome outcome;
+            try (MemoryDb local = new MemoryDb(getApplicationContext())) {
+                AiEnrichmentRunner runner = new AiEnrichmentRunner(local, new AiApi());
+                outcome = runner.run(wordbookId, contentMode, count, config, new AiEnrichmentRunner.Progress() {
+                    @Override public void onBatchStarted(int processed, int requested, int completed, AiEnrichmentStats stats) {
+                        runOnUiThread(() -> {
+                            aiTaskProcessed = processed;
+                            aiTaskCompleted = completed;
+                            updateAiStatusViews(wordbookId, stats, processed, requested);
+                        });
+                    }
+
+                    @Override public void onBatch(int processed, int requested, int completed, AiEnrichmentStats stats) {
+                        runOnUiThread(() -> {
+                            aiTaskProcessed = processed;
+                            aiTaskCompleted = completed;
+                            updateAiStatusViews(wordbookId, stats, processed, requested);
+                        });
+                    }
+                });
+            } catch (Exception error) {
+                Log.w(AI_LOG_TAG, "AI task could not start; wordbook=" + wordbookId, error);
+                outcome = new AiEnrichmentRunner.Outcome(count, 0, 0, "AI 补全未能启动");
+            }
+            AiEnrichmentRunner.Outcome finalOutcome = outcome;
+            runOnUiThread(() -> {
+                aiTaskRunning = false;
+                aiTaskProcessed = finalOutcome.processed;
+                aiTaskCompleted = finalOutcome.completed;
+                rememberLastAiRun(wordbookId, finalOutcome.requested, finalOutcome.processed, finalOutcome.completed);
+                updateAiCompletionButton();
+                AiEnrichmentStats finishedStats = aiStatsCache.get(wordbookId);
+                if (finishedStats != null) updateAiStatusViews(wordbookId, finishedStats, aiTaskProcessed, aiTaskRequested);
+                if (!isFinishing() && !isDestroyed()) {
+                    loadAiStatsAsync(wordbookId);
+                    String message = finalOutcome.error.isEmpty()
+                            ? "AI 补全完成：" + finalOutcome.completed + " / " + finalOutcome.requested
+                            : "AI 补全暂停：" + finalOutcome.error;
+                    Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+                }
+            });
+        });
+    }
+
+    private void showAiSettingsPanel() {
+        AiConfig existing = aiConfigStore.load();
+        LinearLayout body = vertical(0);
+        body.addView(label("OpenAI-compatible 服务", 13, INK, Typeface.BOLD));
+        body.addView(label("支持 GPT-OSS、Ollama compatible endpoint 和其他兼容服务。API Key 可留空。", 10, MUTED, Typeface.NORMAL));
+        body.addView(fieldLabel("Base URL"));
+        EditText baseUrl = input("http://localhost:11434/v1", false); if (existing != null) baseUrl.setText(existing.baseUrl);
+        body.addView(baseUrl, fullHeight(48));
+        body.addView(fieldLabel("API Key（可选）"));
+        EditText apiKey = input("本地服务通常无需填写", true); if (existing != null) apiKey.setText(existing.apiKey);
+        body.addView(apiKey, fullHeight(48));
+        Button fetchModels = paginationButton("↻  获取模型列表");
+        LinearLayout.LayoutParams fetchParams = fullHeight(44); fetchParams.topMargin = dp(10); body.addView(fetchModels, fetchParams);
+        TextView modelStatus = label("填写服务地址后即可读取可用模型。", 10, MUTED, Typeface.NORMAL);
+        modelStatus.setPadding(0, dp(7), 0, 0); body.addView(modelStatus);
+        body.addView(fieldLabel("模型"));
+        EditText model = input("从下方列表选择，或手动填写", false); if (existing != null) model.setText(existing.model);
+        body.addView(model, fullHeight(48));
+        LinearLayout modelChoices = vertical(0);
+        modelChoices.setPadding(0, dp(8), 0, 0);
+        modelChoices.setVisibility(View.GONE);
+        body.addView(modelChoices);
+        final boolean[] loadingModels = {false};
+        View.OnClickListener loadModels = view -> {
+            if (loadingModels[0]) return;
+            String requestedUrl = baseUrl.getText().toString().trim();
+            if (requestedUrl.isEmpty()) { baseUrl.setError("请先填写 Base URL"); return; }
+            loadingModels[0] = true;
+            fetchModels.setEnabled(false);
+            modelStatus.setTextColor(LILAC);
+            modelStatus.setText("正在读取可用模型…");
+            modelChoices.setVisibility(View.GONE);
+            String requestedKey = apiKey.getText().toString();
+            io.execute(() -> {
+                try {
+                    List<String> models = new AiApi().listModels(requestedUrl, requestedKey);
+                    runOnUiThread(() -> {
+                        loadingModels[0] = false;
+                        fetchModels.setEnabled(true);
+                        modelChoices.removeAllViews();
+                        int shown = Math.min(50, models.size());
+                        modelStatus.setTextColor(MINT);
+                        modelStatus.setText("请选择模型（" + shown + " 个可用）");
+                        for (int index = 0; index < shown; index++) {
+                            String modelId = models.get(index);
+                            Button option = modelChoiceButton(modelId);
+                            option.setOnClickListener(choice -> {
+                                model.setText(modelId);
+                                modelChoices.setVisibility(View.GONE);
+                                modelStatus.setTextColor(MINT);
+                                modelStatus.setText("已选择模型：" + modelId);
+                            });
+                            LinearLayout.LayoutParams optionParams = fullHeight(42);
+                            if (index > 0) optionParams.topMargin = dp(6);
+                            modelChoices.addView(option, optionParams);
+                        }
+                        modelChoices.setVisibility(View.VISIBLE);
+                    });
+                } catch (Exception error) {
+                    runOnUiThread(() -> {
+                        loadingModels[0] = false;
+                        fetchModels.setEnabled(true);
+                        modelStatus.setTextColor(CORAL);
+                        modelStatus.setText("无法读取模型：" + safeAiMessage(error));
+                    });
+                }
+            });
+        };
+        fetchModels.setOnClickListener(loadModels);
+        Dialog dialog = panel("配置 AI 服务", body);
+        LinearLayout buttons = new LinearLayout(this);
+        Button cancel = linkButton("稍后"); Button save = primaryButton("保存配置");
+        buttons.addView(cancel, new LinearLayout.LayoutParams(0, dp(48), 1));
+        LinearLayout.LayoutParams saveParams = new LinearLayout.LayoutParams(0, dp(48), 1); saveParams.setMarginStart(dp(8)); buttons.addView(save, saveParams);
+        addPanelButtons(dialog, buttons);
+        cancel.setOnClickListener(view -> dialog.dismiss());
+        save.setOnClickListener(view -> {
+            AiConfig config = new AiConfig(baseUrl.getText().toString(), model.getText().toString(), apiKey.getText().toString());
+            if (config.baseUrl.isEmpty()) { baseUrl.setError("请填写 Base URL"); return; }
+            if (config.model.isEmpty()) { model.setError("请选择或填写模型"); return; }
+            save.setEnabled(false);
+            io.execute(() -> {
+                try {
+                    new AiConfigStore(getApplicationContext()).save(config);
+                    runOnUiThread(() -> { dialog.dismiss(); Toast.makeText(this, "AI 服务已保存", Toast.LENGTH_SHORT).show(); });
+                } catch (Exception error) {
+                    runOnUiThread(() -> { save.setEnabled(true); Toast.makeText(this, "无法保存 AI 配置", Toast.LENGTH_LONG).show(); });
+                }
+            });
+        });
+        dialog.show();
+        // Reopening settings should immediately offer the models from the already-saved service.
+        if (existing != null && !existing.baseUrl.isEmpty()) fetchModels.post(fetchModels::performClick);
+    }
+
+    private Button modelChoiceButton(String value) {
+        Button button = new Button(this);
+        button.setText(value);
+        button.setTextSize(11);
+        button.setAllCaps(false);
+        button.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        button.setTextColor(INK);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setPadding(dp(13), 0, dp(13), 0);
+        button.setBackground(rounded(CARD_RAISED, 12, LINE));
+        applyFlatButtonBehavior(button);
+        return button;
+    }
+
+    private String safeAiMessage(Exception error) {
+        String message = error == null ? "请检查服务地址、网络和 API Key" : error.getMessage();
+        if (message == null || message.trim().isEmpty()) return "请检查服务地址、网络和 API Key";
+        return message.length() > 100 ? message.substring(0, 100) : message;
+    }
+
+    private Dialog panel(String heading, LinearLayout body) {
+        Dialog dialog = new Dialog(this);
+        LinearLayout shell = card();
+        shell.setTag("linguabridge-panel-shell");
+        shell.setPadding(dp(20), dp(19), dp(20), dp(15));
+        shell.addView(title(heading, 21));
+        LinearLayout.LayoutParams bodyParams = fullWrap(); bodyParams.topMargin = dp(10); shell.addView(body, bodyParams);
+        ScrollView scroll = new ScrollView(this); scroll.setFillViewport(true); scroll.setPadding(dp(18), dp(20), dp(18), dp(20));
+        scroll.addView(shell, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        dialog.setContentView(scroll);
+        panelShells.put(dialog, shell);
+        dialog.setOnDismissListener(ignored -> panelShells.remove(dialog));
+        dialog.setOnShowListener(ignored -> {
+            if (dialog.getWindow() != null) {
+                dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+                dialog.getWindow().setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            }
+        });
+        return dialog;
+    }
+
+    private void addPanelButtons(Dialog dialog, LinearLayout buttons) {
+        LinearLayout shell = panelShells.get(dialog);
+        if (shell == null) return;
+        LinearLayout.LayoutParams params = fullWrap(); params.topMargin = dp(16); shell.addView(buttons, params);
+    }
+
+    private void runPhoneticBackfill() {
+        io.execute(() -> {
+            try (MemoryDb local = new MemoryDb(getApplicationContext()); PhoneticDictionary dictionary = new PhoneticDictionary(getApplicationContext())) {
+                local.backfillMissingPhonetics(dictionary);
+            } catch (Exception ignored) {
+                // Optional offline enhancement must never affect app startup or importing.
+            }
+        });
     }
 
     private Button paginationButton(String text) {
@@ -686,6 +1419,165 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         row.addView(heading);
         row.addView(wordbookMetrics(total, due, fresh));
         return row;
+    }
+
+    /**
+     * A left-swipe action drawer for custom wordbooks. The action surface tracks the foreground
+     * edge, so it is never visible underneath the selected card's translucent background.
+     * database work begins after the gesture settles, and diagonal scrolls remain vertical.
+     */
+    private final class WordbookSwipeActionRow extends FrameLayout {
+        private final View foreground;
+        private final View actionSurface;
+        private final float maxReveal;
+        private final int touchSlop;
+        private float downX, downY, startingTranslation;
+        private boolean dragging;
+
+        WordbookSwipeActionRow(Wordbook book, View foreground) {
+            super(MainActivity.this);
+            this.foreground = foreground;
+            maxReveal = dp(150);
+            touchSlop = android.view.ViewConfiguration.get(MainActivity.this).getScaledTouchSlop();
+            LinearLayout actions = new LinearLayout(MainActivity.this);
+            actionSurface = actions;
+            actions.setGravity(Gravity.CENTER_VERTICAL);
+            actions.setPadding(dp(7), 0, dp(7), 0);
+            actions.setBackground(rounded(withAlpha(LILAC, darkMode ? 44 : 24), 17, withAlpha(LILAC, darkMode ? 95 : 62)));
+            Button pin = linkButton(book.pinnedAt > 0 ? "取消置顶" : "置顶");
+            pin.setTextColor(LILAC);
+            pin.setOnClickListener(view -> {
+                closeDrawer(() -> io.execute(() -> {
+                    try (MemoryDb local = new MemoryDb(getApplicationContext())) { local.setWordbookPinned(book.id, book.pinnedAt == 0); }
+                    runOnUiThread(() -> {
+                        if (!isFinishing()) refreshLibraryAfterManagementChange(book.id, book.pinnedAt == 0);
+                    });
+                }));
+            });
+            Button remove = linkButton("删除");
+            remove.setTextColor(CORAL);
+            remove.setOnClickListener(view -> closeDrawer(() -> showDeleteWordbookPanel(book)));
+            actions.addView(pin, new LinearLayout.LayoutParams(dp(76), dp(46)));
+            actions.addView(remove, new LinearLayout.LayoutParams(dp(58), dp(46)));
+            addView(actions, new FrameLayout.LayoutParams((int) maxReveal, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END));
+            // Start beyond the right edge. It slides left exactly as far as the card slides left.
+            actions.setTranslationX(maxReveal);
+            addView(foreground, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+
+        @Override public boolean onInterceptTouchEvent(MotionEvent event) {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    foreground.animate().cancel();
+                    actionSurface.animate().cancel();
+                    downX = event.getX(); downY = event.getY(); startingTranslation = foreground.getTranslationX(); dragging = false;
+                    getParent().requestDisallowInterceptTouchEvent(false);
+                    break;
+                case MotionEvent.ACTION_MOVE:
+                    float dx = event.getX() - downX;
+                    float dy = event.getY() - downY;
+                    float earlyHorizontalSlop = Math.max(dp(3), touchSlop * 0.5f);
+                    boolean openingTendency = dx < -earlyHorizontalSlop;
+                    boolean closingTendency = startingTranslation < 0f && dx > earlyHorizontalSlop;
+                    // Claim the gesture early so a horizontal swipe never also moves the list vertically.
+                    if ((openingTendency || closingTendency) && Math.abs(dx) > Math.abs(dy) * 1.35f) {
+                        getParent().requestDisallowInterceptTouchEvent(true);
+                    }
+                    boolean openingLeft = dx < -touchSlop;
+                    boolean closingRight = startingTranslation < 0f && dx > touchSlop;
+                    boolean horizontalAction = (openingLeft || closingRight) && Math.abs(dx) > Math.abs(dy) * 1.35f;
+                    if (horizontalAction) getParent().requestDisallowInterceptTouchEvent(true);
+                    if (horizontalAction) {
+                        dragging = true;
+                        foreground.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+                        return true;
+                    }
+                    break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    getParent().requestDisallowInterceptTouchEvent(false);
+                    break;
+            }
+            return false;
+        }
+
+        @Override public boolean onTouchEvent(MotionEvent event) {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_MOVE:
+                    if (!dragging) return false;
+                    float translation = Math.min(0f, Math.max(-maxReveal, startingTranslation + event.getX() - downX));
+                    foreground.setTranslationX(translation);
+                    actionSurface.setTranslationX(maxReveal + translation);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    if (!dragging) return false;
+                    if (Math.abs(event.getX() - downX) > touchSlop) performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                    settle(-foreground.getTranslationX() > maxReveal * 0.42f);
+                    dragging = false;
+                    getParent().requestDisallowInterceptTouchEvent(false);
+                    return true;
+                case MotionEvent.ACTION_CANCEL:
+                    if (!dragging) return false;
+                    settle(-foreground.getTranslationX() > maxReveal * 0.42f);
+                    dragging = false;
+                    getParent().requestDisallowInterceptTouchEvent(false);
+                    return true;
+            }
+            return dragging;
+        }
+
+        private void closeDrawer(Runnable afterClosed) { settle(false, afterClosed); }
+
+        private void settle(boolean open) { settle(open, null); }
+
+        private void settle(boolean open, Runnable afterSettled) {
+            float destination = open ? -maxReveal : 0f;
+            foreground.animate().translationX(destination).setDuration(180).setInterpolator(new DecelerateInterpolator()).withEndAction(() -> {
+                foreground.setLayerType(View.LAYER_TYPE_NONE, null);
+                if (afterSettled != null) afterSettled.run();
+            }).start();
+            actionSurface.animate().translationX(maxReveal + destination).setDuration(180)
+                    .setInterpolator(new DecelerateInterpolator()).start();
+        }
+
+        @Override protected void onDetachedFromWindow() {
+            foreground.animate().cancel();
+            actionSurface.animate().cancel();
+            foreground.setTranslationX(0f);
+            actionSurface.setTranslationX(maxReveal);
+            super.onDetachedFromWindow();
+        }
+    }
+
+    private void showDeleteWordbookPanel(Wordbook book) {
+        LinearLayout body = vertical(0);
+        body.addView(label("确定从当前设备删除“" + book.name + "”吗？", 14, INK, Typeface.BOLD));
+        TextView detail = label("词条和相关复习记录将一并删除。已同步词库会在此设备保留忽略标记，不会被自动下载回来。", 11, MUTED, Typeface.NORMAL);
+        detail.setPadding(0, dp(8), 0, 0); body.addView(detail);
+        Dialog dialog = panel("确认删除词库", body);
+        LinearLayout buttons = new LinearLayout(this);
+        Button cancel = linkButton("取消"); Button remove = primaryButton("确认删除"); remove.setTextColor(Color.WHITE);
+        buttons.addView(cancel, new LinearLayout.LayoutParams(0, dp(48), 1));
+        LinearLayout.LayoutParams removeParams = new LinearLayout.LayoutParams(0, dp(48), 1); removeParams.setMarginStart(dp(8)); buttons.addView(remove, removeParams);
+        addPanelButtons(dialog, buttons);
+        cancel.setOnClickListener(view -> dialog.dismiss());
+        remove.setOnClickListener(view -> {
+            remove.setEnabled(false);
+            io.execute(() -> {
+                try (MemoryDb local = new MemoryDb(getApplicationContext())) {
+                    local.deleteWordbook(book.id);
+                    runOnUiThread(() -> {
+                        dialog.dismiss();
+                        if (libraryWordbookId == book.id) { libraryWordbookId = 0; libraryWordbookName = "全部"; libraryOffset = 0; }
+                        showLibrary();
+                        Toast.makeText(this, "已从当前设备删除词库", Toast.LENGTH_SHORT).show();
+                    });
+                } catch (Exception error) {
+                    runOnUiThread(() -> { remove.setEnabled(true); Toast.makeText(this, error.getMessage(), Toast.LENGTH_LONG).show(); });
+                }
+            });
+        });
+        dialog.show();
     }
 
     private LinearLayout wordbookMetrics(int total, int due, int fresh) {
@@ -756,21 +1648,64 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         row.addView(front);
         if (!memoryCard.phonetic.isEmpty()) {
             TextView ipa = label(IpaFormatter.formatIpaForDisplay(memoryCard.phonetic), 15, LILAC, Typeface.NORMAL);
-            ipa.setTypeface(Typeface.create("serif", Typeface.NORMAL));
+            ipa.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+            ipa.setLetterSpacing(0.018f);
+            ipa.setIncludeFontPadding(false);
             row.addView(ipa);
         }
         TextView back = label(memoryCard.back, 13, MUTED, Typeface.NORMAL);
         back.setPadding(0, dp(7), 0, 0);
         row.addView(back);
-        if (!memoryCard.technicalNotes.isEmpty()) {
-            TextView note = label(memoryCard.technicalNotes.get(0), 11,
+        boolean technicalAi = isTechnicalAi(memoryCard);
+        TextView analysisHeading = label(technicalAi ? "技术术语解析" : "AI解析 · 通用词汇", 10, LILAC, Typeface.BOLD);
+        analysisHeading.setPadding(0, dp(9), 0, 0);
+        row.addView(analysisHeading);
+        if ((technicalAi || memoryCard.aiMode.isEmpty()) && !memoryCard.technicalNotes.isEmpty()) {
+            TextView note = label(memoryCard.technicalNotes.get(0), 13,
                     darkMode ? Color.rgb(190, 177, 208) : Color.rgb(91, 78, 103), Typeface.NORMAL);
-            note.setPadding(0, dp(9), 0, 0);
             row.addView(note);
         }
         if (!memoryCard.category.isEmpty()) row.addView(label(memoryCard.category, 11, BLUE, Typeface.NORMAL));
-        if (!memoryCard.context.isEmpty()) row.addView(label(memoryCard.context, 12, MUTED, Typeface.NORMAL));
+        if (!memoryCard.context.isEmpty()) row.addView(label(memoryCard.context, 14, MUTED, Typeface.NORMAL));
+        if (!memoryCard.contextTranslation.isEmpty()) {
+            row.addView(label("中文翻译", 10, BLUE, Typeface.BOLD));
+            row.addView(label(memoryCard.contextTranslation, 14, MUTED, Typeface.NORMAL));
+        } else if (!memoryCard.context.isEmpty() && "pending".equals(memoryCard.aiStatus)) {
+            row.addView(label("中文翻译待补全", 11, MUTED, Typeface.NORMAL));
+        }
+        if (!hasAiAnalysis(memoryCard)) row.addView(label(aiAnalysisFallback(memoryCard), 10, MUTED, Typeface.NORMAL));
         return row;
+    }
+
+    private boolean hasAiAnalysis(MemoryCard memoryCard) {
+        return memoryCard != null && (!memoryCard.context.trim().isEmpty()
+                || !memoryCard.contextTranslation.trim().isEmpty() || !memoryCard.technicalNotes.isEmpty());
+    }
+
+    private boolean isTechnicalAi(MemoryCard memoryCard) {
+        return memoryCard != null && "technical".equals(memoryCard.aiMode);
+    }
+
+    /** A failed or pending request remains actionable information, never an empty "AI解析" panel. */
+    private String aiAnalysisFallback(MemoryCard memoryCard) {
+        if (memoryCard == null) return "AI解析尚未生成。";
+        if ("processing".equals(memoryCard.aiStatus)) return "AI解析生成中，完成后会自动显示。";
+        if ("error".equals(memoryCard.aiStatus)) {
+            String detail = conciseAiError(memoryCard.aiError);
+            return detail.isEmpty() ? "AI解析生成失败，可在词库中再次补全。" : "AI解析生成失败：" + detail;
+        }
+        if ("complete".equals(memoryCard.aiStatus)) return "AI解析内容为空，可再次补全。";
+        return "AI解析尚未生成，可在词库中按需补全。";
+    }
+
+    private String conciseAiError(String raw) {
+        String value = raw == null ? "" : raw.trim();
+        if (value.startsWith("{")) {
+            try { value = new org.json.JSONObject(value).optString("message", value); }
+            catch (Exception ignored) { /* A readable raw message is still better than a blank panel. */ }
+        }
+        value = value.replaceAll("\\s+", " ").trim();
+        return value.length() > 110 ? value.substring(0, 110) + "…" : value;
     }
 
     private void beginReview(long wordbookId) {
@@ -782,7 +1717,10 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                 : db.dueCount(reviewSessionStartedAt, wordbookId);
         reviewCards.clear();
         reviewRatings.clear();
+        reviewBaselines.clear();
         reviewCardIndex = -1;
+        reviewSessionId = UUID.randomUUID().toString();
+        revealedReviewCardId = -1;
         reviewProgressAnimationStart = 0;
         animateReviewProgress = false;
         MemoryCard first = nextUnseenReviewCard();
@@ -839,6 +1777,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
 
         final String savedRating = reviewRatings.get(memoryCard.id);
         final boolean recordedThisSession = savedRating != null;
+        final boolean answerRevealed = revealedReviewCardId == memoryCard.id;
         LinearLayout reviewCard = card();
         reviewCard.setGravity(Gravity.CENTER_HORIZONTAL);
         reviewCard.setPadding(dp(22), dp(28), dp(22), dp(24));
@@ -850,7 +1789,9 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         reviewCard.addView(front, fullWrap());
         if (!memoryCard.phonetic.isEmpty()) {
             TextView ipa = label(IpaFormatter.formatIpaForDisplay(memoryCard.phonetic), 18, LILAC, Typeface.NORMAL);
-            ipa.setTypeface(Typeface.create("serif", Typeface.NORMAL));
+            ipa.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+            ipa.setLetterSpacing(0.018f);
+            ipa.setIncludeFontPadding(false);
             ipa.setGravity(Gravity.CENTER);
             ipa.setPadding(0, dp(8), 0, 0);
             reviewCard.addView(ipa, fullWrap());
@@ -860,7 +1801,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         reviewCard.addView(speak);
 
         TextView swipeHint = label(recordedThisSession
-                ? "本轮已记录"
+                ? "本轮已有评分；显示答案后可修改 · 右滑返回上一张"
                 : "左滑轻松并进入下一张 · 右滑返回上一张", 10, MUTED, Typeface.NORMAL);
         swipeHint.setGravity(Gravity.CENTER);
         swipeHint.setPadding(0, dp(8), 0, 0);
@@ -872,41 +1813,48 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         reviewCard.addView(reveal, revealParams);
 
         LinearLayout answer = vertical(10);
-        answer.setVisibility(recordedThisSession ? View.VISIBLE : View.GONE);
+        answer.setVisibility(answerRevealed ? View.VISIBLE : View.GONE);
         answer.setPadding(0, dp(22), 0, 0);
         answer.addView(label("答案", 10, MUTED, Typeface.BOLD));
         answer.addView(label(memoryCard.back, 20, INK, Typeface.BOLD));
         if (!memoryCard.category.isEmpty()) answer.addView(label(memoryCard.category, 12, BLUE, Typeface.NORMAL));
+        boolean technicalAi = isTechnicalAi(memoryCard);
+        answer.addView(sectionLabel(technicalAi ? "技术术语解析" : "AI解析 · 通用词汇"));
         if (!memoryCard.context.isEmpty()) {
             answer.addView(sectionLabel("原句语境"));
-            answer.addView(label(memoryCard.context, 12, MUTED, Typeface.NORMAL));
+            answer.addView(label(memoryCard.context, 15, MUTED, Typeface.NORMAL));
         }
-        if (!memoryCard.technicalNotes.isEmpty()) {
+        if (!memoryCard.contextTranslation.isEmpty()) {
+            answer.addView(sectionLabel("中文翻译"));
+            answer.addView(label(memoryCard.contextTranslation, 15, INK, Typeface.NORMAL));
+        } else if (!memoryCard.context.isEmpty() && "pending".equals(memoryCard.aiStatus)) {
+            answer.addView(sectionLabel("中文翻译"));
+            answer.addView(label("中文翻译待补全，请再次运行 AI 补全。", 14, MUTED, Typeface.NORMAL));
+        }
+        if ((technicalAi || memoryCard.aiMode.isEmpty()) && !memoryCard.technicalNotes.isEmpty()) {
             answer.addView(sectionLabel("技术关联"));
             for (String note : memoryCard.technicalNotes) {
-                answer.addView(label("• " + note, 12,
+                answer.addView(label("• " + note, 14,
                         darkMode ? Color.rgb(202, 190, 219) : Color.rgb(88, 75, 100), Typeface.NORMAL));
             }
+        }
+        if (!hasAiAnalysis(memoryCard)) {
+            answer.addView(label(aiAnalysisFallback(memoryCard), 12, MUTED, Typeface.NORMAL));
         }
         reviewCard.addView(answer, fullWrap());
 
         LinearLayout ratings = new LinearLayout(this);
-        ratings.setVisibility(View.GONE);
+        ratings.setVisibility(answerRevealed ? View.VISIBLE : View.GONE);
         ratings.setPadding(0, dp(16), 0, 0);
         addRating(ratings, reviewCard, memoryCard, "忘记", "again", Color.rgb(197, 67, 55));
         addRating(ratings, reviewCard, memoryCard, "模糊", "hard", Color.rgb(180, 119, 28));
         addRating(ratings, reviewCard, memoryCard, "记得", "good", BLUE);
         addRating(ratings, reviewCard, memoryCard, "轻松", "easy", Color.rgb(40, 132, 93));
         reviewCard.addView(ratings, fullWrap());
-        if (recordedThisSession) {
-            TextView recorded = label("已记录：" + ratingLabel(savedRating), 12, BLUE, Typeface.BOLD);
-            recorded.setGravity(Gravity.CENTER);
-            recorded.setPadding(0, dp(16), 0, 0);
-            reviewCard.addView(recorded, fullWrap());
-            reveal.setVisibility(View.GONE);
-        }
+        if (answerRevealed) reveal.setVisibility(View.GONE);
         reveal.setOnClickListener(view -> {
             view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+            revealedReviewCardId = memoryCard.id;
             revealReviewAnswer(reveal, answer, ratings, swipeHint, -1);
         });
 
@@ -962,7 +1910,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
     }
 
     private int reviewProgressValue() {
-        return Math.min(Math.max(0, reviewCardIndex), reviewSessionTotal);
+        return Math.min(reviewRatings.size(), reviewSessionTotal);
     }
 
     /** A compact progress meter with a moving crystal highlight whenever progress changes. */
@@ -1069,47 +2017,22 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
         preview.addView(front, fullWrap());
         if (!memoryCard.phonetic.isEmpty()) {
             TextView ipa = label(IpaFormatter.formatIpaForDisplay(memoryCard.phonetic), 18, LILAC, Typeface.NORMAL);
-            ipa.setTypeface(Typeface.create("serif", Typeface.NORMAL));
+            ipa.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+            ipa.setLetterSpacing(0.018f);
+            ipa.setIncludeFontPadding(false);
             ipa.setGravity(Gravity.CENTER);
             ipa.setPadding(0, dp(8), 0, 0);
             preview.addView(ipa, fullWrap());
         }
         preview.addView(linkButton("朗读"));
-        String savedRating = reviewRatings.get(memoryCard.id);
-        TextView hint = label(savedRating == null
-                ? "左滑轻松并进入下一张 · 右滑返回上一张"
-                : "本轮已记录 · 左滑轻松下一张 · 右滑上一张", 10, MUTED, Typeface.NORMAL);
+        TextView hint = label("左滑轻松并进入下一张 · 右滑返回上一张", 10, MUTED, Typeface.NORMAL);
         hint.setGravity(Gravity.CENTER);
         hint.setPadding(0, dp(8), 0, 0);
         preview.addView(hint);
-        if (savedRating == null) {
-            Button reveal = primaryButton("显示答案");
-            LinearLayout.LayoutParams revealParams = fullHeight(50);
-            revealParams.topMargin = dp(20);
-            preview.addView(reveal, revealParams);
-        } else {
-            LinearLayout answer = vertical(10);
-            answer.setPadding(0, dp(22), 0, 0);
-            answer.addView(label("答案", 10, MUTED, Typeface.BOLD));
-            answer.addView(label(memoryCard.back, 20, INK, Typeface.BOLD));
-            if (!memoryCard.category.isEmpty()) answer.addView(label(memoryCard.category, 12, BLUE, Typeface.NORMAL));
-            if (!memoryCard.context.isEmpty()) {
-                answer.addView(sectionLabel("原句语境"));
-                answer.addView(label(memoryCard.context, 12, MUTED, Typeface.NORMAL));
-            }
-            if (!memoryCard.technicalNotes.isEmpty()) {
-                answer.addView(sectionLabel("技术关联"));
-                for (String note : memoryCard.technicalNotes) {
-                    answer.addView(label("• " + note, 12,
-                            darkMode ? Color.rgb(202, 190, 219) : Color.rgb(88, 75, 100), Typeface.NORMAL));
-                }
-            }
-            preview.addView(answer, fullWrap());
-            TextView recorded = label("已记录：" + ratingLabel(savedRating), 12, BLUE, Typeface.BOLD);
-            recorded.setGravity(Gravity.CENTER);
-            recorded.setPadding(0, dp(16), 0, 0);
-            preview.addView(recorded, fullWrap());
-        }
+        Button reveal = primaryButton("显示答案");
+        LinearLayout.LayoutParams revealParams = fullHeight(50);
+        revealParams.topMargin = dp(20);
+        preview.addView(reveal, revealParams);
         return preview;
     }
 
@@ -1151,8 +2074,14 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                 ? Math.max(System.currentTimeMillis(), reviewSessionStartedAt + 1)
                 : System.currentTimeMillis();
         reviewProgressAnimationStart = reviewProgressValue();
-        db.review(memoryCard.id, rating, reviewedAt);
+        ReviewBaseline baseline = reviewBaselines.get(memoryCard.id);
+        if (baseline == null) {
+            baseline = memoryCard.reviewBaseline();
+            reviewBaselines.put(memoryCard.id, baseline);
+        }
+        db.reviewFromBaseline(memoryCard.id, rating, reviewedAt, baseline, reviewSessionId);
         reviewRatings.put(memoryCard.id, rating);
+        revealedReviewCardId = -1;
         animateReviewProgress = true;
         ReviewNotifications.scheduleNext(this);
         reviewCard.setEnabled(false);
@@ -1343,6 +2272,7 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
             reviewProgressAnimationStart = reviewProgressValue();
             animateReviewProgress = true;
             reviewCardIndex = previousIndex;
+            revealedReviewCardId = -1;
             reviewCardSwitching = true;
             animateReviewCardTransition(stage, direction, this::showReview);
             return;
@@ -1354,8 +2284,14 @@ public final class MainActivity extends Activity implements TextToSpeech.OnInitL
                 ? Math.max(System.currentTimeMillis(), reviewSessionStartedAt + 1)
                 : System.currentTimeMillis();
         reviewProgressAnimationStart = reviewProgressValue();
-        db.review(memoryCard.id, "easy", reviewedAt);
+        ReviewBaseline baseline = reviewBaselines.get(memoryCard.id);
+        if (baseline == null) {
+            baseline = memoryCard.reviewBaseline();
+            reviewBaselines.put(memoryCard.id, baseline);
+        }
+        db.reviewFromBaseline(memoryCard.id, "easy", reviewedAt, baseline, reviewSessionId);
         reviewRatings.put(memoryCard.id, "easy");
+        revealedReviewCardId = -1;
         animateReviewProgress = true;
         ReviewNotifications.scheduleNext(this);
         stage.activeCard().setEnabled(false);

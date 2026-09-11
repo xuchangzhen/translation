@@ -60,7 +60,7 @@ public class MemoryDbWordbookTest {
             assertEquals("good", logs.getString(2)); assertEquals(100, logs.getLong(3)); assertEquals(99999, logs.getLong(4)); assertFalse(logs.moveToNext());
         }
         assertEquals("桌面翻译", db.wordbooks(0).get(0).name);
-        assertEquals(3, db.getReadableDatabase().getVersion());
+        assertEquals(6, db.getReadableDatabase().getVersion());
     }
     @Test public void importsTwentyThousandAndUsesExistingScheduler() {
         StringBuilder source = new StringBuilder("word,translation\n");

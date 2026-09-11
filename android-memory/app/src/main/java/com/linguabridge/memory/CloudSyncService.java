@@ -114,6 +114,7 @@ public final class CloudSyncService extends Service {
             org.json.JSONArray summaries = CloudApi.listWordbooks(config);
             for (int i = 0; i < summaries.length() && !stopping.get(); i++) {
                 org.json.JSONObject summary = summaries.getJSONObject(i);
+                if (db.isCloudWordbookIgnored(summary.optString("id"), config.deviceId)) continue;
                 if (db.cloudWordbookVersion(summary.optString("id"), config.deviceId) >= summary.optLong("version", 0)) continue;
                 CloudApi.DownloadedWordbook downloaded = CloudApi.downloadWordbook(config, summary);
                 String json = downloaded.items.toString();
@@ -123,6 +124,11 @@ public final class CloudSyncService extends Service {
                 );
                 if (result.added + result.updated > 0) {
                     broadcast("wordbooks", "已同步词库“" + downloaded.name + "”", result.added + result.updated);
+                }
+                // A completed old-device scan is invalidated by new cloud cards, so run the
+                // same bounded, transactional repair on this background service thread.
+                try (PhoneticDictionary dictionary = new PhoneticDictionary(getApplicationContext())) {
+                    db.backfillMissingPhonetics(dictionary);
                 }
             }
         } catch (Exception ignored) {

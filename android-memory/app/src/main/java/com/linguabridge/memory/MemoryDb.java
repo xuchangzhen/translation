@@ -16,7 +16,9 @@ import java.util.Locale;
 
 public final class MemoryDb extends SQLiteOpenHelper {
     private static final String DATABASE_NAME = "word-memory.db";
-    private static final int DATABASE_VERSION = 3;
+    /** v4 adds wordbook management/AI state; v5 makes same-session reviews replaceable; v6 adds context translations. */
+    private static final int DATABASE_VERSION = 6;
+    private static final String PHONETIC_BACKFILL_KEY = "phonetic_backfill_v1";
 
     public MemoryDb(Context context) {
         super(context, DATABASE_NAME, null, DATABASE_VERSION);
@@ -27,14 +29,18 @@ public final class MemoryDb extends SQLiteOpenHelper {
         createWordbooks(db);
         createCards(db);
         createWordbookSyncColumns(db);
+        createWordbookFeatureColumns(db);
+        createAuxiliaryTables(db);
         db.execSQL("CREATE TABLE review_log (" +
                 "id INTEGER PRIMARY KEY AUTOINCREMENT," +
                 "card_id INTEGER NOT NULL," +
                 "rating TEXT NOT NULL," +
                 "reviewed_at INTEGER NOT NULL," +
-                "next_due_at INTEGER NOT NULL" +
+                "next_due_at INTEGER NOT NULL," +
+                "session_id TEXT NOT NULL DEFAULT ''" +
                 ")");
         db.execSQL("CREATE INDEX review_log_date_idx ON review_log(reviewed_at)");
+        db.execSQL("CREATE UNIQUE INDEX review_log_session_card_idx ON review_log(session_id, card_id) WHERE session_id <> ''");
     }
 
     private void createWordbooks(SQLiteDatabase db) {
@@ -43,12 +49,22 @@ public final class MemoryDb extends SQLiteOpenHelper {
     }
 
     private void createWordbookSyncColumns(SQLiteDatabase db) {
-        db.execSQL("ALTER TABLE wordbooks ADD COLUMN cloud_id TEXT NOT NULL DEFAULT ''");
-        db.execSQL("ALTER TABLE wordbooks ADD COLUMN cloud_space TEXT NOT NULL DEFAULT ''");
-        db.execSQL("ALTER TABLE wordbooks ADD COLUMN cloud_version INTEGER NOT NULL DEFAULT 0");
-        db.execSQL("ALTER TABLE wordbooks ADD COLUMN local_revision INTEGER NOT NULL DEFAULT 0");
-        db.execSQL("ALTER TABLE wordbooks ADD COLUMN synced_revision INTEGER NOT NULL DEFAULT 0");
+        addColumnIfMissing(db, "wordbooks", "cloud_id TEXT NOT NULL DEFAULT ''");
+        addColumnIfMissing(db, "wordbooks", "cloud_space TEXT NOT NULL DEFAULT ''");
+        addColumnIfMissing(db, "wordbooks", "cloud_version INTEGER NOT NULL DEFAULT 0");
+        addColumnIfMissing(db, "wordbooks", "local_revision INTEGER NOT NULL DEFAULT 0");
+        addColumnIfMissing(db, "wordbooks", "synced_revision INTEGER NOT NULL DEFAULT 0");
         db.execSQL("CREATE UNIQUE INDEX wordbooks_cloud_idx ON wordbooks(cloud_space, cloud_id) WHERE cloud_id <> ''");
+    }
+
+    private void createWordbookFeatureColumns(SQLiteDatabase db) {
+        addColumnIfMissing(db, "wordbooks", "content_mode TEXT NOT NULL DEFAULT 'general'");
+        addColumnIfMissing(db, "wordbooks", "pinned_at INTEGER NOT NULL DEFAULT 0");
+    }
+
+    private void createAuxiliaryTables(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS app_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS ignored_cloud_wordbooks (cloud_id TEXT NOT NULL, cloud_space TEXT NOT NULL, deleted_at INTEGER NOT NULL, PRIMARY KEY(cloud_id, cloud_space))");
     }
 
     private void createCards(SQLiteDatabase db) {
@@ -66,6 +82,7 @@ public final class MemoryDb extends SQLiteOpenHelper {
                 "phonetic TEXT NOT NULL DEFAULT ''," +
                 "technical_notes TEXT NOT NULL DEFAULT '[]'," +
                 "context TEXT NOT NULL DEFAULT ''," +
+                "context_translation TEXT NOT NULL DEFAULT ''," +
                 "terms TEXT NOT NULL DEFAULT '[]'," +
                 "created_at INTEGER NOT NULL," +
                 "content_updated_at INTEGER NOT NULL," +
@@ -78,6 +95,10 @@ public final class MemoryDb extends SQLiteOpenHelper {
                 "lapses INTEGER NOT NULL DEFAULT 0," +
                 "last_reviewed_at INTEGER NOT NULL DEFAULT 0," +
                 "archived_at INTEGER NOT NULL DEFAULT 0," +
+                "ai_status TEXT NOT NULL DEFAULT 'pending'," +
+                "ai_error TEXT NOT NULL DEFAULT ''," +
+                "ai_updated_at INTEGER NOT NULL DEFAULT 0," +
+                "ai_mode TEXT NOT NULL DEFAULT ''," +
                 "UNIQUE(wordbook_id, sync_key)" +
                 ")");
         db.execSQL("CREATE INDEX cards_due_idx ON cards(archived_at, due_at)");
@@ -100,22 +121,57 @@ public final class MemoryDb extends SQLiteOpenHelper {
             db.execSQL("DROP TABLE cards_v1");
         }
         if (oldVersion < 3) createWordbookSyncColumns(db);
+        if (oldVersion < 4) {
+            createWordbookFeatureColumns(db);
+            addColumnIfMissing(db, "cards", "ai_status TEXT NOT NULL DEFAULT 'pending'");
+            addColumnIfMissing(db, "cards", "ai_error TEXT NOT NULL DEFAULT ''");
+            addColumnIfMissing(db, "cards", "ai_updated_at INTEGER NOT NULL DEFAULT 0");
+            addColumnIfMissing(db, "cards", "ai_mode TEXT NOT NULL DEFAULT ''");
+            // Existing imported examples are already usable learning content; never re-request
+            // them merely because this status column was added in an upgrade.
+            db.execSQL("UPDATE cards SET ai_status = 'complete' WHERE context <> '' AND ai_status = 'pending'");
+            createAuxiliaryTables(db);
+        }
+        if (oldVersion < 5) {
+            addColumnIfMissing(db, "review_log", "session_id TEXT NOT NULL DEFAULT ''");
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS review_log_session_card_idx ON review_log(session_id, card_id) WHERE session_id <> ''");
+        }
+        if (oldVersion < 6) {
+            addColumnIfMissing(db, "cards", "context_translation TEXT NOT NULL DEFAULT ''");
+            // AI-created cards need one more pass to receive the newly required translation;
+            // imported/example content with ai_updated_at = 0 remains untouched.
+            db.execSQL("UPDATE cards SET ai_status = 'pending', ai_error = '' WHERE ai_status = 'complete' AND ai_updated_at > 0 AND context_translation = ''");
+        }
+    }
+
+    private void addColumnIfMissing(SQLiteDatabase db, String table, String definition) {
+        String name = definition.trim().split("\\s+", 2)[0];
+        try (Cursor columns = db.rawQuery("PRAGMA table_info(" + table + ")", null)) {
+            while (columns.moveToNext()) if (name.equals(columns.getString(1))) return;
+        }
+        db.execSQL("ALTER TABLE " + table + " ADD COLUMN " + definition);
     }
 
     public synchronized List<Wordbook> wordbooks(long now) {
         List<Wordbook> result = new ArrayList<>();
         try (Cursor cursor = getReadableDatabase().rawQuery(
-                "SELECT w.id, w.name, COUNT(c.id), COALESCE(SUM(c.due_at <= ?),0), COALESCE(SUM(c.state = 'new'),0) " +
+                "SELECT w.id, w.name, COUNT(c.id), COALESCE(SUM(c.due_at <= ?),0), COALESCE(SUM(c.state = 'new'),0), w.pinned_at, w.content_mode " +
                 "FROM wordbooks w LEFT JOIN cards c ON c.wordbook_id = w.id AND c.archived_at = 0 " +
-                "GROUP BY w.id ORDER BY w.id", new String[]{String.valueOf(now)})) {
-            while (cursor.moveToNext()) result.add(new Wordbook(cursor.getLong(0), cursor.getString(1), cursor.getInt(2), cursor.getInt(3), cursor.getInt(4)));
+                "GROUP BY w.id ORDER BY CASE WHEN w.pinned_at > 0 THEN 0 ELSE 1 END, w.pinned_at DESC, w.id ASC", new String[]{String.valueOf(now)})) {
+            while (cursor.moveToNext()) result.add(new Wordbook(cursor.getLong(0), cursor.getString(1), cursor.getInt(2), cursor.getInt(3), cursor.getInt(4), cursor.getLong(5), cursor.getString(6)));
         }
         return result;
     }
 
     public synchronized WordbookImportResult importWordbook(ImportPreview preview, String requestedName) {
+        return importWordbook(preview, requestedName, "general");
+    }
+
+    /** Import stays entirely offline: content mode is metadata for a later user-started AI job. */
+    public synchronized WordbookImportResult importWordbook(ImportPreview preview, String requestedName, String requestedContentMode) {
         String name = requestedName.trim();
         if (name.isEmpty() || name.length() > 100) throw new IllegalArgumentException("词库名称需要 1–100 个字符。");
+        String contentMode = normalizeContentMode(requestedContentMode);
         SQLiteDatabase db = getWritableDatabase();
         long now = System.currentTimeMillis(), wordbookId;
         int added = 0, updated = 0;
@@ -125,11 +181,14 @@ public final class MemoryDb extends SQLiteOpenHelper {
                 if (cursor.moveToFirst()) {
                     if (!"local".equals(cursor.getString(1))) throw new IllegalArgumentException("“桌面翻译”用于自动同步，请为本地词库使用其他名称。");
                     wordbookId = cursor.getLong(0);
+                    ContentValues mode = new ContentValues(); mode.put("content_mode", contentMode);
+                    db.update("wordbooks", mode, "id = ?", new String[]{String.valueOf(wordbookId)});
                 } else {
-                    ContentValues book = new ContentValues(); book.put("name", name); book.put("source", "local");
+                    ContentValues book = new ContentValues(); book.put("name", name); book.put("source", "local"); book.put("content_mode", contentMode);
                     wordbookId = db.insertOrThrow("wordbooks", null, book);
                 }
             }
+            boolean hasMissingPhonetic = false;
             for (WordbookImporter.Item item : preview.items) {
                 String key = WordbookImporter.normalizeFront(item.front);
                 ContentValues values = new ContentValues();
@@ -137,12 +196,15 @@ public final class MemoryDb extends SQLiteOpenHelper {
                 values.put("technical_notes", item.definition.isEmpty() ? "[]" : new JSONArray().put(item.definition).toString());
                 values.put("category", item.category); values.put("context", item.context); values.put("content_updated_at", now);
                 int changed = db.update("cards", values, "wordbook_id = ? AND sync_key = ?", new String[]{String.valueOf(wordbookId), key});
-                if (changed > 0) { updated++; continue; }
+                if (changed > 0) { updated++; if (item.phonetic.isEmpty()) hasMissingPhonetic = true; continue; }
                 values.put("wordbook_id", wordbookId); values.put("sync_key", key); values.put("external_id", "");
                 values.put("type", "word"); values.put("front_language", "en"); values.put("back_language", "zh-CN");
                 values.put("created_at", now); values.put("state", "new"); values.put("due_at", now);
+                values.put("ai_status", aiContentIsComplete(contentMode, item.context, item.definition) ? "complete" : "pending");
                 db.insertOrThrow("cards", null, values); added++;
+                if (item.phonetic.isEmpty()) hasMissingPhonetic = true;
             }
+            if (hasMissingPhonetic) clearMetadata(db, PHONETIC_BACKFILL_KEY);
             db.execSQL("UPDATE wordbooks SET local_revision = local_revision + 1 WHERE id = ?", new Object[]{wordbookId});
             db.setTransactionSuccessful();
         } finally { db.endTransaction(); }
@@ -172,12 +234,13 @@ public final class MemoryDb extends SQLiteOpenHelper {
                 database.update("wordbooks", values, "id = ?", new String[]{String.valueOf(id)});
             }
             JSONArray items = new JSONArray();
-            try (Cursor cards = database.rawQuery("SELECT front,back,phonetic,technical_notes,category,context FROM cards WHERE wordbook_id = ? AND archived_at = 0 ORDER BY id", new String[]{String.valueOf(id)})) {
+            try (Cursor cards = database.rawQuery("SELECT front,back,phonetic,technical_notes,category,context,context_translation FROM cards WHERE wordbook_id = ? AND archived_at = 0 ORDER BY id", new String[]{String.valueOf(id)})) {
                 while (cards.moveToNext()) {
                     JSONArray notes = new JSONArray(cards.getString(3));
                     items.put(new JSONObject().put("front", cards.getString(0)).put("back", cards.getString(1))
                             .put("phonetic", cards.getString(2)).put("definition", notes.optString(0, ""))
-                            .put("category", cards.getString(4)).put("context", cards.getString(5)));
+                            .put("category", cards.getString(4)).put("context", cards.getString(5))
+                            .put("contextTranslation", cards.getString(6)));
                 }
             }
             CloudSnapshot snapshot = new CloudSnapshot(id, cloudId, book.getString(0), space, book.getLong(4), book.getLong(5), items);
@@ -225,7 +288,7 @@ public final class MemoryDb extends SQLiteOpenHelper {
                 }
             }
             if (!existing) name = availableWordbookName(database, name);
-            WordbookImportResult result = importWordbook(preview, name);
+            WordbookImportResult result = importWordbook(preview, name, "general");
             ContentValues metadata = new ContentValues(); metadata.put("cloud_id", cloudId); metadata.put("cloud_space", space); metadata.put("cloud_version", version);
             database.update("wordbooks", metadata, "id = ?", new String[]{String.valueOf(result.wordbookId)});
             database.execSQL("UPDATE wordbooks SET synced_revision = local_revision WHERE id = ?", new Object[]{result.wordbookId});
@@ -251,6 +314,214 @@ public final class MemoryDb extends SQLiteOpenHelper {
             this.wordbookId = wordbookId; this.added = added; this.updated = updated; this.ignored = ignored; this.invalid = invalid;
         }
     }
+
+    private String normalizeContentMode(String value) {
+        return "technical".equals(value) || "auto".equals(value) ? value : "general";
+    }
+
+    private boolean aiContentIsComplete(String mode, String context, String definition) {
+        if (context == null || context.trim().isEmpty()) return false;
+        return !"technical".equals(mode) || (definition != null && !definition.trim().isEmpty());
+    }
+
+    /** Pinning affects only display order; it never changes card order or review scheduling. */
+    public synchronized boolean setWordbookPinned(long wordbookId, boolean pinned) {
+        if (wordbookId <= 1) return false;
+        ContentValues values = new ContentValues(); values.put("pinned_at", pinned ? System.currentTimeMillis() : 0);
+        return getWritableDatabase().update("wordbooks", values, "id = ? AND source = 'local'", new String[]{String.valueOf(wordbookId)}) == 1;
+    }
+
+    /** Deletes only a custom local wordbook and leaves a local cloud tombstone when needed. */
+    public synchronized void deleteWordbook(long wordbookId) {
+        if (wordbookId <= 1) throw new IllegalArgumentException("桌面翻译词库不能删除。");
+        SQLiteDatabase database = getWritableDatabase();
+        database.beginTransaction();
+        try (Cursor book = database.rawQuery("SELECT source,cloud_id,cloud_space FROM wordbooks WHERE id = ?", new String[]{String.valueOf(wordbookId)})) {
+            if (!book.moveToFirst() || !"local".equals(book.getString(0))) throw new IllegalArgumentException("只能删除自定义词库。");
+            String cloudId = book.getString(1);
+            String cloudSpace = book.getString(2);
+            if (!cloudId.isEmpty() && !cloudSpace.isEmpty()) {
+                ContentValues tombstone = new ContentValues(); tombstone.put("cloud_id", cloudId); tombstone.put("cloud_space", cloudSpace); tombstone.put("deleted_at", System.currentTimeMillis());
+                database.insertWithOnConflict("ignored_cloud_wordbooks", null, tombstone, SQLiteDatabase.CONFLICT_REPLACE);
+            }
+            database.execSQL("DELETE FROM review_log WHERE card_id IN (SELECT id FROM cards WHERE wordbook_id = ?)", new Object[]{wordbookId});
+            database.delete("cards", "wordbook_id = ?", new String[]{String.valueOf(wordbookId)});
+            database.delete("wordbooks", "id = ?", new String[]{String.valueOf(wordbookId)});
+            database.setTransactionSuccessful();
+        } finally { database.endTransaction(); }
+    }
+
+    public synchronized boolean isCloudWordbookIgnored(String cloudId, String cloudSpace) {
+        if (cloudId == null || cloudSpace == null || cloudId.isEmpty() || cloudSpace.isEmpty()) return false;
+        return scalarInt(getReadableDatabase(), "SELECT COUNT(*) FROM ignored_cloud_wordbooks WHERE cloud_id = ? AND cloud_space = ?", new String[]{cloudId, cloudSpace}) > 0;
+    }
+
+    public synchronized AiEnrichmentStats aiStats(long wordbookId) {
+        if (wordbookId <= 0) return new AiEnrichmentStats(0, 0, 0, 0, 0);
+        try (Cursor cursor = getReadableDatabase().rawQuery(
+                "SELECT COUNT(*), COALESCE(SUM(ai_status = 'complete'),0), COALESCE(SUM(ai_status = 'pending'),0), COALESCE(SUM(ai_status = 'error'),0), COALESCE(SUM(ai_status = 'processing'),0) FROM cards WHERE wordbook_id = ? AND archived_at = 0",
+                new String[]{String.valueOf(wordbookId)})) {
+            if (!cursor.moveToFirst()) return new AiEnrichmentStats(0, 0, 0, 0, 0);
+            return new AiEnrichmentStats(cursor.getInt(0), cursor.getInt(1), cursor.getInt(2), cursor.getInt(3), cursor.getInt(4));
+        }
+    }
+
+    /** Claims a stable, single-concurrency batch. Pending cards are exhausted before failed retries. */
+    public synchronized List<AiWorkItem> claimAiBatch(long wordbookId, int limit) {
+        int capped = Math.max(1, Math.min(20, limit));
+        SQLiteDatabase database = getWritableDatabase();
+        long now = System.currentTimeMillis();
+        database.beginTransaction();
+        try {
+            database.execSQL("UPDATE cards SET ai_status = 'error', ai_error = '上次补全未完成，可手动重试', ai_updated_at = ? WHERE wordbook_id = ? AND ai_status = 'processing' AND ai_updated_at < ?",
+                    new Object[]{now, wordbookId, now - 30L * 60L * 1000L});
+            List<AiWorkItem> result = queryAiWork(database, wordbookId, "pending", capped);
+            if (result.isEmpty()) result = queryAiWork(database, wordbookId, "error", capped);
+            if (!result.isEmpty()) {
+                StringBuilder ids = new StringBuilder();
+                for (int index = 0; index < result.size(); index++) {
+                    if (index > 0) ids.append(',');
+                    ids.append(result.get(index).id);
+                }
+                ContentValues claimed = new ContentValues(); claimed.put("ai_status", "processing"); claimed.put("ai_error", ""); claimed.put("ai_updated_at", now);
+                database.update("cards", claimed, "id IN (" + ids + ") AND wordbook_id = ?", new String[]{String.valueOf(wordbookId)});
+            }
+            database.setTransactionSuccessful();
+            return result;
+        } finally { database.endTransaction(); }
+    }
+
+    private List<AiWorkItem> queryAiWork(SQLiteDatabase database, long wordbookId, String status, int limit) {
+        List<AiWorkItem> result = new ArrayList<>();
+        try (Cursor cursor = database.rawQuery(
+                // Keep AI work in the same order as the learning queue. Otherwise a completed
+                // batch can be reported as successful while the first cards shown in study still
+                // belong to a different part of the wordbook.
+                "SELECT id,front,back,category,context,context_translation,technical_notes FROM cards WHERE wordbook_id = ? AND archived_at = 0 AND ai_status = ? ORDER BY due_at ASC, repetitions ASC, created_at ASC, id ASC LIMIT " + limit,
+                new String[]{String.valueOf(wordbookId), status})) {
+            while (cursor.moveToNext()) {
+                result.add(new AiWorkItem(cursor.getLong(0), cursor.getString(1), cursor.getString(2), cursor.getString(3), cursor.getString(4), cursor.getString(5), firstJsonString(cursor.getString(6))));
+            }
+        }
+        return result;
+    }
+
+    /** Applies every valid item independently, so malformed output cannot poison other cards. */
+    public synchronized int applyAiBatch(long wordbookId, List<AiWorkItem> claimed, List<AiEnrichmentResult> results, String wordbookMode) {
+        SQLiteDatabase database = getWritableDatabase();
+        java.util.Map<Long, AiEnrichmentResult> byId = new java.util.HashMap<>();
+        if (results != null) for (AiEnrichmentResult result : results) if (result != null && !byId.containsKey(result.id)) byId.put(result.id, result);
+        int completed = 0;
+        long now = System.currentTimeMillis();
+        database.beginTransaction();
+        try {
+            for (AiWorkItem item : claimed) {
+                AiEnrichmentResult result = byId.get(item.id);
+                String effectiveMode = "auto".equals(wordbookMode) && result != null ? normalizeContentMode(result.resolvedMode) : normalizeContentMode(wordbookMode);
+                if ("auto".equals(effectiveMode)) effectiveMode = "general";
+                String context = item.context.isEmpty() && result != null ? bounded(result.context, 2000) : item.context;
+                String contextTranslation = item.contextTranslation.isEmpty() && result != null ? bounded(result.contextTranslation, 500) : item.contextTranslation;
+                String note = item.technicalNote.isEmpty() && result != null ? bounded(result.technicalNote, 1000) : item.technicalNote;
+                boolean valid = result != null && !context.isEmpty()
+                        && (!result.translationRequired || !contextTranslation.isEmpty())
+                        && (!"technical".equals(effectiveMode) || !note.isEmpty());
+                if (!valid) {
+                    ContentValues error = new ContentValues(); error.put("ai_status", "error"); error.put("ai_error", "AI 返回内容不完整，可手动重试"); error.put("ai_updated_at", now);
+                    database.update("cards", error, "id = ? AND wordbook_id = ? AND ai_status = 'processing'", new String[]{String.valueOf(item.id), String.valueOf(wordbookId)});
+                    continue;
+                }
+                ContentValues values = new ContentValues();
+                if (item.context.isEmpty()) values.put("context", context);
+                if (item.contextTranslation.isEmpty() && !contextTranslation.isEmpty()) values.put("context_translation", contextTranslation);
+                if ("technical".equals(effectiveMode) && item.technicalNote.isEmpty() && !note.isEmpty()) values.put("technical_notes", new JSONArray().put(note).toString());
+                // AI content is user-visible card content; refresh the library's recent-content
+                // ordering when a batch actually writes it.
+                values.put("content_updated_at", now);
+                values.put("ai_status", "complete"); values.put("ai_error", ""); values.put("ai_updated_at", now); values.put("ai_mode", effectiveMode);
+                if (database.update("cards", values, "id = ? AND wordbook_id = ? AND ai_status = 'processing'", new String[]{String.valueOf(item.id), String.valueOf(wordbookId)}) == 1) completed++;
+            }
+            database.setTransactionSuccessful();
+        } finally { database.endTransaction(); }
+        return completed;
+    }
+
+    public synchronized void markAiBatchError(long wordbookId, List<AiWorkItem> claimed, String message) {
+        if (claimed == null || claimed.isEmpty()) return;
+        String safeMessage = bounded(message, 240);
+        if (safeMessage.isEmpty()) safeMessage = "AI 服务暂时不可用，可手动重试";
+        SQLiteDatabase database = getWritableDatabase();
+        database.beginTransaction();
+        try {
+            ContentValues values = new ContentValues(); values.put("ai_status", "error"); values.put("ai_error", safeMessage); values.put("ai_updated_at", System.currentTimeMillis());
+            for (AiWorkItem item : claimed) database.update("cards", values, "id = ? AND wordbook_id = ? AND ai_status = 'processing'", new String[]{String.valueOf(item.id), String.valueOf(wordbookId)});
+            database.setTransactionSuccessful();
+        } finally { database.endTransaction(); }
+    }
+
+    private String firstJsonString(String value) {
+        try { return new JSONArray(value).optString(0, "").trim(); }
+        catch (Exception ignored) { return ""; }
+    }
+
+    private String bounded(String value, int maximum) {
+        String cleaned = value == null ? "" : value.trim();
+        return cleaned.length() > maximum ? "" : cleaned;
+    }
+
+    /** Backfills old, plain-English word cards once per dictionary version, off the UI thread. */
+    public synchronized PhoneticBackfillResult backfillMissingPhonetics(PhoneticDictionary dictionary) {
+        if (dictionary == null || metadata(getReadableDatabase(), PHONETIC_BACKFILL_KEY) != null) return new PhoneticBackfillResult(0, 0, dictionary != null && dictionary.isUnavailable(), true);
+        dictionary.find("linguabridge-backfill-probe");
+        if (dictionary.isUnavailable()) return new PhoneticBackfillResult(0, 0, true, false);
+        SQLiteDatabase database = getWritableDatabase();
+        int scanned = 0, filled = 0;
+        try {
+            long afterId = 0;
+            while (true) {
+                List<long[]> candidates = new ArrayList<>();
+                List<String> fronts = new ArrayList<>();
+                try (Cursor cursor = database.rawQuery("SELECT id,front FROM cards WHERE id > ? AND type = 'word' AND phonetic = '' ORDER BY id ASC LIMIT 200", new String[]{String.valueOf(afterId)})) {
+                    while (cursor.moveToNext()) { candidates.add(new long[]{cursor.getLong(0)}); fronts.add(cursor.getString(1)); afterId = cursor.getLong(0); }
+                }
+                if (candidates.isEmpty()) break;
+                database.beginTransaction();
+                try {
+                    for (int index = 0; index < candidates.size(); index++) {
+                        String front = fronts.get(index);
+                        if (!isPhoneticCandidate(front)) continue;
+                        scanned++;
+                        String phonetic = dictionary.find(front);
+                        if (dictionary.isUnavailable()) throw new IllegalStateException("本地音标词典不可用");
+                        if (phonetic != null && !phonetic.trim().isEmpty()) {
+                            ContentValues values = new ContentValues(); values.put("phonetic", phonetic.trim());
+                            database.update("cards", values, "id = ? AND phonetic = ''", new String[]{String.valueOf(candidates.get(index)[0])});
+                            filled++;
+                        }
+                    }
+                    database.setTransactionSuccessful();
+                } finally { database.endTransaction(); }
+            }
+            putMetadata(database, PHONETIC_BACKFILL_KEY, "done");
+            return new PhoneticBackfillResult(scanned, filled, false, false);
+        } catch (Exception ignored) {
+            return new PhoneticBackfillResult(scanned, filled, dictionary.isUnavailable(), false);
+        }
+    }
+
+    private boolean isPhoneticCandidate(String value) {
+        return value != null && value.matches("[A-Za-z][A-Za-z'\\-]{0,79}");
+    }
+
+    private String metadata(SQLiteDatabase database, String key) {
+        try (Cursor cursor = database.rawQuery("SELECT value FROM app_metadata WHERE key = ?", new String[]{key})) { return cursor.moveToFirst() ? cursor.getString(0) : null; }
+    }
+
+    private void putMetadata(SQLiteDatabase database, String key, String value) {
+        ContentValues item = new ContentValues(); item.put("key", key); item.put("value", value);
+        database.insertWithOnConflict("app_metadata", null, item, SQLiteDatabase.CONFLICT_REPLACE);
+    }
+
+    private void clearMetadata(SQLiteDatabase database, String key) { database.delete("app_metadata", "key = ?", new String[]{key}); }
 
     public synchronized ImportResult importPayload(JSONObject payload) throws Exception {
         JSONArray items = payload.optJSONArray("items");
@@ -335,6 +606,7 @@ public final class MemoryDb extends SQLiteOpenHelper {
         values.put("phonetic", clean(item.optString("phonetic"), 300));
         values.put("technical_notes", safeArray(item.optJSONArray("technicalNotes"), 20, 1000).toString());
         values.put("context", clean(item.optString("context"), 2000));
+        values.put("context_translation", clean(item.optString("contextTranslation", item.optString("contextZh")), 500));
         values.put("terms", safeArray(item.optJSONArray("terms"), 20, 2000).toString());
         values.put("created_at", Math.max(0, item.optLong("createdAt", now)));
         values.put("content_updated_at", incomingUpdatedAt);
@@ -388,7 +660,7 @@ public final class MemoryDb extends SQLiteOpenHelper {
                 new String[]{String.valueOf(now)},
                 null,
                 null,
-                "due_at ASC, repetitions ASC, created_at ASC",
+                "CASE WHEN ai_status = 'complete' THEN 0 ELSE 1 END, due_at ASC, repetitions ASC, created_at ASC, id ASC",
                 "1"
         );
         try {
@@ -404,7 +676,7 @@ public final class MemoryDb extends SQLiteOpenHelper {
         StringBuilder selection = new StringBuilder("archived_at = 0 AND due_at <= ?");
         args.add(String.valueOf(now));
         appendWordbookAndExclusions(selection, args, wordbookId, excludedIds);
-        return firstMatchingCard(selection.toString(), args, "due_at ASC, repetitions ASC, created_at ASC");
+        return firstMatchingCard(selection.toString(), args, "CASE WHEN ai_status = 'complete' THEN 0 ELSE 1 END, due_at ASC, repetitions ASC, created_at ASC, id ASC");
     }
 
     /**
@@ -420,7 +692,7 @@ public final class MemoryDb extends SQLiteOpenHelper {
                 new String[]{String.valueOf(sessionStartedAt)},
                 null,
                 null,
-                "last_reviewed_at ASC, due_at ASC, repetitions ASC, created_at ASC",
+                "CASE WHEN ai_status = 'complete' THEN 0 ELSE 1 END, last_reviewed_at ASC, due_at ASC, repetitions ASC, created_at ASC, id ASC",
                 "1"
         );
         try {
@@ -444,7 +716,7 @@ public final class MemoryDb extends SQLiteOpenHelper {
         StringBuilder selection = new StringBuilder("archived_at = 0 AND last_reviewed_at <= ?");
         args.add(String.valueOf(sessionStartedAt));
         appendWordbookAndExclusions(selection, args, wordbookId, excludedIds);
-        return firstMatchingCard(selection.toString(), args, "last_reviewed_at ASC, due_at ASC, repetitions ASC, created_at ASC");
+        return firstMatchingCard(selection.toString(), args, "CASE WHEN ai_status = 'complete' THEN 0 ELSE 1 END, last_reviewed_at ASC, due_at ASC, repetitions ASC, created_at ASC, id ASC");
     }
 
     private void appendWordbookAndExclusions(StringBuilder selection, List<String> args, long wordbookId, List<Long> excludedIds) {
@@ -496,29 +768,30 @@ public final class MemoryDb extends SQLiteOpenHelper {
     }
 
     public synchronized void review(long cardId, String rating, long now) {
+        ReviewBaseline baseline;
+        try (Cursor cursor = getReadableDatabase().query(
+                "cards", new String[]{"interval_days", "repetitions", "ease_factor", "lapses", "state", "due_at"},
+                "id = ? AND archived_at = 0", new String[]{String.valueOf(cardId)}, null, null, null, "1")) {
+            if (!cursor.moveToFirst()) throw new IllegalArgumentException("Card not found");
+            baseline = new ReviewBaseline(cursor.getInt(0), cursor.getInt(1), cursor.getDouble(2), cursor.getInt(3), cursor.getString(4), cursor.getLong(5));
+        }
+        reviewFromBaseline(cardId, rating, now, baseline, "");
+    }
+
+    /**
+     * Replaces a card's rating within one review session. The scheduling calculation always uses
+     * the snapshot from before the first rating, avoiding accidental double SRS advancement.
+     */
+    public synchronized void reviewFromBaseline(long cardId, String rating, long now, ReviewBaseline baseline, String sessionId) {
         if (!("again".equals(rating) || "hard".equals(rating) || "good".equals(rating) || "easy".equals(rating))) {
             throw new IllegalArgumentException("Unknown review rating");
         }
+        if (baseline == null) throw new IllegalArgumentException("Review baseline is required");
+        String safeSessionId = sessionId == null ? "" : sessionId.trim();
         SQLiteDatabase db = getWritableDatabase();
-        Cursor cursor = db.query(
-                "cards",
-                new String[]{"interval_days", "repetitions", "ease_factor", "lapses"},
-                "id = ? AND archived_at = 0",
-                new String[]{String.valueOf(cardId)},
-                null,
-                null,
-                null,
-                "1"
+        ReviewScheduler.Result result = ReviewScheduler.schedule(
+                baseline.intervalDays, baseline.repetitions, baseline.easeFactor, baseline.lapses, rating, now
         );
-        ReviewScheduler.Result result;
-        try {
-            if (!cursor.moveToFirst()) throw new IllegalArgumentException("Card not found");
-            result = ReviewScheduler.schedule(
-                    cursor.getInt(0), cursor.getInt(1), cursor.getDouble(2), cursor.getInt(3), rating, now
-            );
-        } finally {
-            cursor.close();
-        }
         db.beginTransaction();
         try {
             ContentValues values = new ContentValues();
@@ -529,13 +802,16 @@ public final class MemoryDb extends SQLiteOpenHelper {
             values.put("due_at", result.dueAt());
             values.put("state", result.state());
             values.put("last_reviewed_at", now);
-            db.update("cards", values, "id = ?", new String[]{String.valueOf(cardId)});
+            if (db.update("cards", values, "id = ? AND archived_at = 0", new String[]{String.valueOf(cardId)}) != 1) throw new IllegalArgumentException("Card not found");
+
+            if (!safeSessionId.isEmpty()) db.delete("review_log", "card_id = ? AND session_id = ?", new String[]{String.valueOf(cardId), safeSessionId});
 
             ContentValues log = new ContentValues();
             log.put("card_id", cardId);
             log.put("rating", rating);
             log.put("reviewed_at", now);
             log.put("next_due_at", result.dueAt());
+            log.put("session_id", safeSessionId);
             db.insertOrThrow("review_log", null, log);
             db.setTransactionSuccessful();
         } finally {
@@ -568,7 +844,11 @@ public final class MemoryDb extends SQLiteOpenHelper {
         card.backLanguage = getString(cursor, "back_language");
         card.phonetic = getString(cursor, "phonetic");
         card.context = getString(cursor, "context");
+        card.contextTranslation = getString(cursor, "context_translation");
         card.technicalNotes = jsonStrings(getString(cursor, "technical_notes"));
+        card.aiStatus = getString(cursor, "ai_status");
+        card.aiError = getString(cursor, "ai_error");
+        card.aiMode = getString(cursor, "ai_mode");
         card.createdAt = getLong(cursor, "created_at");
         card.updatedAt = getLong(cursor, "content_updated_at");
         card.dueAt = getLong(cursor, "due_at");

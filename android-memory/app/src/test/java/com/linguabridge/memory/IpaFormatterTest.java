@@ -6,18 +6,25 @@ import org.junit.Test;
 
 public final class IpaFormatterTest {
     @Test
-    public void removesOnlyPrimaryAndSecondaryStressMarksForDisplay() {
+    public void preservesPrimaryAndSecondaryStressMarksForDisplay() {
         String storedIpa = "/ˈklɑk/";
-        assertEquals("/klɑk/", IpaFormatter.formatIpaForDisplay(storedIpa));
+        assertEquals("/ˈklɑk/", IpaFormatter.formatIpaForDisplay(storedIpa));
         assertEquals("/ˈklɑk/", storedIpa);
-        assertEquals("/ɑsəleɪtɚ/", IpaFormatter.formatIpaForDisplay("/ˈɑsəˌleɪtɚ/"));
-        assertEquals("/əbændən/", IpaFormatter.formatIpaForDisplay("/əˈbændən/"));
+        assertEquals("/ˈɑsəˌleɪtɚ/", IpaFormatter.formatIpaForDisplay("/ˈɑsəˌleɪtɚ/"));
+        assertEquals("/əˈbændən/", IpaFormatter.formatIpaForDisplay("/əˈbændən/"));
     }
 
     @Test
     public void retainsOtherIpaGlyphsAndPunctuation() {
-        assertEquals("/θðŋæɚ/", IpaFormatter.formatIpaForDisplay("/ˈθðŋæɚ/"));
+        assertEquals("/ˈθðŋæɚ/", IpaFormatter.formatIpaForDisplay("/ˈθðŋæɚ/"));
         assertEquals("/'a’b/", IpaFormatter.formatIpaForDisplay("/'a’b/"));
         assertEquals("", IpaFormatter.formatIpaForDisplay(null));
+    }
+
+    @Test
+    public void normalizesBareAndBracketedSourcesToTheSameDesktopStyle() {
+        assertEquals("/kæʃ/", IpaFormatter.formatIpaForDisplay("kæʃ"));
+        assertEquals("/ˈkæʃ/", IpaFormatter.formatIpaForDisplay("[ˈkæʃ]"));
+        assertEquals("/ˈkæʃ/", IpaFormatter.formatIpaForDisplay(" /ˈkæʃ/ "));
     }
 }
