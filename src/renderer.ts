@@ -30,6 +30,8 @@ let codexCatalog: CodexModel[] = [];
 let codexCatalogLoading = false;
 let ollamaCatalog: OllamaModel[] = [];
 let ollamaCatalogLoading = false;
+let compatibleCatalog: string[] = [];
+let compatibleModelActiveIndex = -1;
 let currentPlatform = "";
 let appVersion = "";
 let memorySyncStatus: MemorySyncStatus | null = null;
@@ -337,8 +339,7 @@ function settingsMarkup() {
           </div>
           <div class="provider-fields span-2" data-provider="compatible">
             <label class="field"><span>API Base URL</span><input placeholder="https://api.example.com/v1" id="setting-compatible-url" value="${escapeAttribute(settings.compatibleBaseUrl)}"></label>
-            <label class="field"><span>Model</span><input list="compatible-model-list" id="setting-compatible-model" value="${escapeAttribute(settings.compatibleModel)}"></label>
-            <datalist id="compatible-model-list"></datalist>
+            <div class="field"><label for="setting-compatible-model">Model</label><div class="model-combobox"><input id="setting-compatible-model" value="${escapeAttribute(settings.compatibleModel)}" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="compatible-model-list"><div id="compatible-model-list" class="model-option-list" role="listbox" hidden></div></div></div>
             <button id="refresh-compatible-models" class="text-button" type="button">获取模型</button>
             <p id="compatible-model-status">AI 翻译中转站 · 应用会把翻译请求发送到该服务的 OpenAI Chat Completions 接口。模型 ID 也可手动填写。</p>
           </div>
@@ -591,7 +592,140 @@ function escapeAttribute(value: string) {
     .replaceAll(">", "&gt;");
 }
 
+function compatibleModelMatches(value: string) {
+  const query = value.trim().toLocaleLowerCase();
+  return compatibleCatalog.filter((model) =>
+    model.toLocaleLowerCase().includes(query)
+  );
+}
+
+function closeCompatibleModelOptions() {
+  const input = document.querySelector<HTMLInputElement>("#setting-compatible-model");
+  const list = document.querySelector<HTMLElement>("#compatible-model-list");
+  if (!input || !list) return;
+  compatibleModelActiveIndex = -1;
+  list.hidden = true;
+  input.setAttribute("aria-expanded", "false");
+  input.removeAttribute("aria-activedescendant");
+}
+
+function clearCompatibleModelOptions() {
+  compatibleCatalog = [];
+  compatibleModelActiveIndex = -1;
+  const list = document.querySelector<HTMLElement>("#compatible-model-list");
+  list?.replaceChildren();
+  closeCompatibleModelOptions();
+}
+
+function chooseCompatibleModel(model: string) {
+  const input = document.querySelector<HTMLInputElement>("#setting-compatible-model");
+  if (!input) return;
+  input.value = model;
+  closeCompatibleModelOptions();
+}
+
+function renderCompatibleModelOptions(open = false) {
+  const input = document.querySelector<HTMLInputElement>("#setting-compatible-model");
+  const list = document.querySelector<HTMLElement>("#compatible-model-list");
+  if (!input || !list) return;
+
+  const models = compatibleModelMatches(input.value);
+  compatibleModelActiveIndex = Math.min(
+    compatibleModelActiveIndex,
+    models.length - 1
+  );
+  list.replaceChildren();
+  models.forEach((model, index) => {
+    const option = document.createElement("button");
+    option.id = `compatible-model-option-${index}`;
+    option.type = "button";
+    option.className = "model-option";
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", String(index === compatibleModelActiveIndex));
+    option.classList.toggle("active", index === compatibleModelActiveIndex);
+    option.textContent = model;
+    option.title = model;
+    option.addEventListener("pointerdown", (event) => event.preventDefault());
+    option.addEventListener("click", () => chooseCompatibleModel(model));
+    list.append(option);
+  });
+
+  const expanded = open && models.length > 0;
+  list.hidden = !expanded;
+  input.setAttribute("aria-expanded", String(expanded));
+  const activeOption = list.querySelector<HTMLElement>(".model-option.active");
+  if (activeOption && expanded) {
+    input.setAttribute("aria-activedescendant", activeOption.id);
+    activeOption.scrollIntoView({ block: "nearest" });
+  } else {
+    input.removeAttribute("aria-activedescendant");
+  }
+}
+
+function bindCompatibleModelPicker() {
+  const input = document.querySelector<HTMLInputElement>("#setting-compatible-model");
+  if (!input) return;
+  compatibleModelActiveIndex = -1;
+  renderCompatibleModelOptions();
+  input.addEventListener("focus", () => renderCompatibleModelOptions(true));
+  input.addEventListener("click", () => renderCompatibleModelOptions(true));
+  input.addEventListener("input", () => {
+    compatibleModelActiveIndex = -1;
+    renderCompatibleModelOptions(true);
+  });
+  input.addEventListener("blur", () => {
+    window.setTimeout(closeCompatibleModelOptions, 120);
+  });
+  input.addEventListener("keydown", (event) => {
+    const keyboardEvent = event as KeyboardEvent;
+    const models = compatibleModelMatches(input.value);
+    if (!models.length) {
+      if (keyboardEvent.key === "Escape") closeCompatibleModelOptions();
+      return;
+    }
+    if (keyboardEvent.key === "ArrowDown") {
+      keyboardEvent.preventDefault();
+      compatibleModelActiveIndex = Math.min(
+        compatibleModelActiveIndex + 1,
+        models.length - 1
+      );
+      renderCompatibleModelOptions(true);
+    } else if (keyboardEvent.key === "ArrowUp") {
+      keyboardEvent.preventDefault();
+      compatibleModelActiveIndex = compatibleModelActiveIndex < 0
+        ? models.length - 1
+        : Math.max(compatibleModelActiveIndex - 1, 0);
+      renderCompatibleModelOptions(true);
+    } else if (keyboardEvent.key === "PageDown") {
+      keyboardEvent.preventDefault();
+      compatibleModelActiveIndex = Math.min(
+        Math.max(compatibleModelActiveIndex, 0) + 8,
+        models.length - 1
+      );
+      renderCompatibleModelOptions(true);
+    } else if (keyboardEvent.key === "PageUp") {
+      keyboardEvent.preventDefault();
+      compatibleModelActiveIndex = Math.max(compatibleModelActiveIndex - 8, 0);
+      renderCompatibleModelOptions(true);
+    } else if (keyboardEvent.key === "Home" && !document.querySelector<HTMLElement>("#compatible-model-list")?.hidden) {
+      keyboardEvent.preventDefault();
+      compatibleModelActiveIndex = 0;
+      renderCompatibleModelOptions(true);
+    } else if (keyboardEvent.key === "End" && !document.querySelector<HTMLElement>("#compatible-model-list")?.hidden) {
+      keyboardEvent.preventDefault();
+      compatibleModelActiveIndex = models.length - 1;
+      renderCompatibleModelOptions(true);
+    } else if (keyboardEvent.key === "Enter" && compatibleModelActiveIndex >= 0) {
+      keyboardEvent.preventDefault();
+      chooseCompatibleModel(models[compatibleModelActiveIndex]);
+    } else if (keyboardEvent.key === "Escape") {
+      closeCompatibleModelOptions();
+    }
+  });
+}
+
 function bindEvents() {
+  bindCompatibleModelPicker();
   document.querySelectorAll<HTMLButtonElement>("[data-view]").forEach((button) => {
     button.addEventListener("click", () => switchView(button.dataset.view!));
   });
@@ -654,8 +788,7 @@ function bindEvents() {
     });
   for (const selector of ["#setting-compatible-url", "#setting-api-key"]) {
     document.querySelector(selector)?.addEventListener("input", () => {
-      const list = document.querySelector("#compatible-model-list");
-      if (list) list.innerHTML = "";
+      clearCompatibleModelOptions();
     });
   }
   document.querySelector("#refresh-compatible-models")?.addEventListener("click", async () => {
@@ -672,8 +805,10 @@ function bindEvents() {
         status.textContent = "API 配置已改变，请重新获取模型。";
         return;
       }
-      document.querySelector("#compatible-model-list")!.innerHTML = models.map(id => `<option value="${escapeAttribute(id)}"></option>`).join("");
-      status.textContent = `已获取 ${models.length} 个模型，可从 Model 输入框选择或手动填写。`;
+      compatibleCatalog = models;
+      compatibleModelActiveIndex = -1;
+      renderCompatibleModelOptions(true);
+      status.textContent = `已获取 ${models.length} 个模型；列表可滚动，也可搜索或手动填写。`;
     } catch (error) { status.textContent = humanizeError(error); }
     finally { button.disabled = false; }
   });

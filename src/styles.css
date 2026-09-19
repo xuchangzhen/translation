@@ -932,6 +932,64 @@ kbd {
   box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.12);
 }
 
+.model-combobox {
+  position: relative;
+  display: block;
+}
+
+.model-option-list {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  right: 0;
+  left: 0;
+  max-height: min(264px, calc(100vh - 180px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+  padding: 4px;
+}
+
+.model-option-list[hidden] {
+  display: none;
+}
+
+.model-option {
+  display: block;
+  width: 100%;
+  min-height: 34px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  padding: 0 9px;
+  font-size: 12px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-option:hover,
+.model-option.active {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.model-option-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.model-option-list::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 60%, transparent);
+  background-clip: content-box;
+}
+
 .shortcut-input {
   cursor: pointer;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

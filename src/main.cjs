@@ -93,6 +93,12 @@ function configureStableUserDataPath() {
 
 configureStableUserDataPath();
 
+// uiohook can receive a shortcut in every running app process, even when
+// Electron's global shortcut is already owned by another instance. Keep one
+// process so a single selection can never fan out into multiple popups.
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
+
 let mainWindow;
 let popupWindow;
 let pendingPopupPayload = null;
@@ -121,6 +127,8 @@ const shortcutTriggerTimes = new Map();
 let popupDismissClickSerial = 0;
 let popupRevealSerial = 0;
 let popupManuallyHidden = false;
+let selectionCaptureInFlight = false;
+let lastSelectionCaptureAt = 0;
 const translationCache = new Map();
 const enrichmentCache = new Map();
 const speechCache = new Map();
@@ -918,6 +926,10 @@ function restoreClipboardText(previousText) {
 }
 
 async function captureSelectedText() {
+  const now = Date.now();
+  if (selectionCaptureInFlight || now - lastSelectionCaptureAt < 700) return;
+  selectionCaptureInFlight = true;
+  lastSelectionCaptureAt = now;
   const previousText = clipboard.readText();
   clipboard.clear();
   try {
@@ -964,6 +976,8 @@ async function captureSelectedText() {
       error: error instanceof Error ? error.message : String(error),
       source: "selection"
     });
+  } finally {
+    selectionCaptureInFlight = false;
   }
 }
 
@@ -1016,7 +1030,9 @@ function registerShortcuts() {
       process.platform === "win32"
         ? parseHookShortcut(shortcut, process.platform)
         : null;
-    if (hookShortcut) {
+    // The native hook is only a fallback. Registering both paths causes one
+    // key press to create two independent selection captures.
+    if (!registered && hookShortcut) {
       hookShortcutHandlers.push({
         ...hookShortcut,
         id: label,
@@ -1737,6 +1753,11 @@ function registerIpc() {
   });
 }
 
+if (hasSingleInstanceLock) {
+app.on("second-instance", () => {
+  if (mainWindow && !mainWindow.isDestroyed()) showMainWindow();
+});
+
 app.whenReady().then(() => {
   store = new SettingsStore(app.getPath("userData"));
   if (["light", "dark"].includes(process.env.LINGUABRIDGE_SMOKE_THEME)) {
@@ -1871,3 +1892,4 @@ app.on("before-quit", async () => {
 });
 
 app.on("window-all-closed", () => {});
+}
