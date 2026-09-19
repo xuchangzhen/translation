@@ -113,6 +113,8 @@ let suppressMainWindowActivation = false;
 let startupShortcutNotice = "";
 let overlayWindows = [];
 let overlayContexts = new Map();
+let screenshotCaptureInFlight = false;
+let screenshotCaptureGeneration = 0;
 let ocrWorker = null;
 let ocrWorkerLanguages = "";
 let modifierHook = null;
@@ -1282,14 +1284,19 @@ async function captureAllDisplays() {
 }
 
 async function startScreenshotCapture() {
-  if (overlayWindows.length) return;
+  if (screenshotCaptureInFlight || overlayWindows.length) return false;
+  screenshotCaptureInFlight = true;
+  const captureGeneration = ++screenshotCaptureGeneration;
   enterBackgroundWindowMode();
   suppressMainWindowActivation = true;
   if (popupWindow && !popupWindow.isDestroyed()) popupWindow.destroy();
+  const contexts = new Map();
+  const windows = [];
+  let focusedOverlay = false;
   try {
     const captures = await captureAllDisplays();
-    overlayContexts = new Map();
-    overlayWindows = captures.map(({ display, image }) => {
+    if (captureGeneration !== screenshotCaptureGeneration) return false;
+    for (const { display, image } of captures) {
       const win = new BrowserWindow({
         x: display.bounds.x,
         y: display.bounds.y,
@@ -1316,29 +1323,61 @@ async function startScreenshotCapture() {
       win.setAlwaysOnTop(true, "screen-saver");
       win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
       const webContentsId = win.webContents.id;
-      overlayContexts.set(webContentsId, { display, image });
+      contexts.set(webContentsId, { display, image });
       win.loadURL(rendererUrl("overlay.html"));
       win.once("ready-to-show", () => {
-        if (win.isDestroyed()) return;
+        if (win.isDestroyed() || captureGeneration !== screenshotCaptureGeneration) {
+          if (!win.isDestroyed()) win.destroy();
+          return;
+        }
         win.setBounds(display.bounds, false);
-        win.showInactive();
+        if (!focusedOverlay) {
+          focusedOverlay = true;
+          win.show();
+          win.focus();
+        } else {
+          win.showInactive();
+        }
       });
       win.on("closed", () => {
-        overlayContexts.delete(webContentsId);
-        overlayWindows = overlayWindows.filter((item) => item !== win);
+        contexts.delete(webContentsId);
+        if (captureGeneration === screenshotCaptureGeneration) {
+          overlayWindows = overlayWindows.filter((item) => item !== win);
+        }
       });
-      return win;
-    });
+      windows.push(win);
+    }
+    if (captureGeneration !== screenshotCaptureGeneration) {
+      for (const win of windows) {
+        if (!win.isDestroyed()) win.destroy();
+      }
+      return false;
+    }
+    overlayContexts = contexts;
+    overlayWindows = windows.filter((win) => !win.isDestroyed());
+    return overlayWindows.length > 0;
   } catch (error) {
-    suppressMainWindowActivation = false;
-    showTranslationPopup({
-      source: "screenshot",
-      error: `无法开始截图选区：${error.message}`
-    });
+    for (const win of windows) {
+      if (!win.isDestroyed()) win.destroy();
+    }
+    if (captureGeneration === screenshotCaptureGeneration) {
+      suppressMainWindowActivation = false;
+      showTranslationPopup({
+        source: "screenshot",
+        error: `无法开始截图选区：${error instanceof Error ? error.message : String(error)}`
+      });
+    }
+    return false;
+  } finally {
+    if (captureGeneration === screenshotCaptureGeneration) {
+      screenshotCaptureInFlight = false;
+    }
   }
 }
 
 function closeOverlays() {
+  screenshotCaptureGeneration += 1;
+  screenshotCaptureInFlight = false;
   const windows = [...overlayWindows];
   overlayWindows = [];
   overlayContexts.clear();
@@ -1607,10 +1646,7 @@ function registerIpc() {
         : store.apiKey(settings.provider);
     return testProvider(settings, candidateKey);
   });
-  ipcMain.handle("capture:start", async () => {
-    await startScreenshotCapture();
-    return true;
-  });
+  ipcMain.handle("capture:start", () => startScreenshotCapture());
   ipcMain.handle("popup:resize", (event, requestedHeight) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win !== popupWindow) return false;

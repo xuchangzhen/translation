@@ -11,8 +11,12 @@ const selectionActions =
   document.querySelector<HTMLDivElement>("#selection-actions")!;
 const reselectButton =
   document.querySelector<HTMLButtonElement>("#selection-reselect")!;
+const selectionCancelButton =
+  document.querySelector<HTMLButtonElement>("#selection-cancel")!;
 const confirmButton =
   document.querySelector<HTMLButtonElement>("#selection-confirm")!;
+const cancelButton =
+  document.querySelector<HTMLButtonElement>("#overlay-cancel")!;
 
 let startX = 0;
 let startY = 0;
@@ -60,7 +64,7 @@ function positionActions(
   height: number
 ) {
   selectionActions.hidden = false;
-  const actionsWidth = selectionActions.offsetWidth || 178;
+  const actionsWidth = selectionActions.offsetWidth || 248;
   const actionsHeight = selectionActions.offsetHeight || 44;
   const left = Math.min(
     window.innerWidth - actionsWidth - 14,
@@ -113,7 +117,7 @@ window.addEventListener("mousedown", (event) => {
     document.body.classList.add("resizing");
     return;
   }
-  if ((event.target as HTMLElement).closest("#selection-actions")) return;
+  if ((event.target as HTMLElement).closest("#selection-actions, #overlay-tip")) return;
   if (
     (event.target as HTMLElement).closest("#selection") &&
     pendingRect
@@ -265,20 +269,39 @@ confirmButton.addEventListener("click", async (event) => {
   if (!pendingRect) return;
   confirmButton.disabled = true;
   confirmButton.textContent = "识别中…";
-  const completed = await window.lingua.completeSelection(pendingRect);
-  if (!completed) {
+  try {
+    const completed = await window.lingua.completeSelection(pendingRect);
+    if (completed) return;
+  } catch {
+    // Keep the overlay usable if the main process has already closed it.
+  }
+  if (confirmButton.isConnected) {
     confirmButton.disabled = false;
     confirmButton.textContent = "截图翻译";
   }
 });
 
+function cancelSelection() {
+  void window.lingua.cancelSelection();
+}
+
+selectionCancelButton.addEventListener("click", (event) => {
+  event.stopPropagation();
+  cancelSelection();
+});
+
+cancelButton.addEventListener("click", (event) => {
+  event.stopPropagation();
+  cancelSelection();
+});
+
 window.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") void window.lingua.cancelSelection();
+  if (event.key === "Escape") cancelSelection();
 });
 
 window.addEventListener("contextmenu", (event) => {
   event.preventDefault();
-  void window.lingua.cancelSelection();
+  cancelSelection();
 });
 
 resetShade();
