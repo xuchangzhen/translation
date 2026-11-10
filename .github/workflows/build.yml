@@ -20,7 +20,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             command: build:mac
             artifact: |
               release/*.dmg
@@ -65,7 +65,7 @@ jobs:
       - name: 验证系统密钥存储与 AI 中转站接口
         run: pnpm exec electron scripts/verify-desktop-runtime.cjs
       - name: 验证 macOS 本地完整性签名
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         shell: bash
         run: |
           app_bundle="$(find release -type d -name '*.app' -print -quit)"
@@ -75,7 +75,7 @@ jobs:
           fi
           codesign --verify --deep --strict --verbose=2 "$app_bundle"
       - name: 生成 Ed25519 安全更新清单
-        if: matrix.os == 'macos-14' && startsWith(github.ref, 'refs/tags/v')
+        if: matrix.os == 'macos-15' && startsWith(github.ref, 'refs/tags/v')
         shell: bash
         env:
           MAC_UPDATE_PRIVATE_KEY_BASE64: ${{ secrets.MAC_UPDATE_PRIVATE_KEY_BASE64 }}
