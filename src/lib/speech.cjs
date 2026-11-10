@@ -149,12 +149,13 @@ async function ensureMamboRunning(settings) {
 async function synthesizeMambo(text, settings) {
   const content = String(text || "").trim();
   if (!content) throw new Error("朗读文本为空");
+  if (content.length > 1200) throw new Error("曼波语音文本超过 1200 字符");
   const companion = macCompanionUrl(settings);
   if (companion) {
     const response = await fetch(`${companion}/api/speech`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: content.slice(0, 1200) })
+      body: JSON.stringify({ text: content })
     });
     if (!response.ok) {
       const detail = (await response.text()).trim();
@@ -180,7 +181,7 @@ async function synthesizeMambo(text, settings) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        text: content.slice(0, 1200),
+        text: content,
         text_lang: "zh",
         ref_audio_path: path.join(root, "models", "refer.wav"),
         prompt_lang: "zh",

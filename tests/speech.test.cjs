@@ -15,6 +15,10 @@ test("normalizes and recognizes local Mambo URLs", () => {
   assert.equal(isLocalMamboUrl("http://192.168.1.8:9880"), false);
 });
 
+test("Mambo rejects oversized text instead of silently truncating it", async () => {
+  await assert.rejects(synthesizeMambo("中".repeat(1201), {}), /1200/);
+});
+
 test("Mambo synthesis sends Chinese API v2 payload and accepts WAV", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "linguabridge-mambo-"));
   const files = [

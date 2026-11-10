@@ -1806,11 +1806,7 @@ function renderResult(result: TranslationResult) {
       "朗读原文",
       "speaker",
       () =>
-        speakText(
-          result.pronunciationText ||
-            document.querySelector<HTMLTextAreaElement>("#source-text")!.value,
-          result.sourceLanguage
-        ),
+        speakText(sourceText, result.sourceLanguage),
       true
     );
     phoneticText.append(phoneticLabel, ipa);
@@ -1951,10 +1947,12 @@ function actionButton(
     const text = button.querySelector("span");
     const originalText = text?.textContent || "";
     const waitingLabel = window.setTimeout(() => {
-      if (text && icon === "speaker") text.textContent = "准备音频…";
+      if (text && icon === "speaker") text.textContent = "朗读中…";
     }, 120);
     try {
       await callback();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), true);
     } finally {
       window.clearTimeout(waitingLabel);
       if (text) text.textContent = originalText;

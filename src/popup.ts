@@ -264,6 +264,7 @@ function renderResult(result: TranslationResult, source: string) {
         </div>
       </div>
       <div id="popup-translation" class="popup-translation"></div>
+      <p id="popup-speech-error" class="popup-enrichment-failed" role="status" hidden></p>
       ${phonetic}
       ${explanation}
       ${termMarkup}
@@ -334,17 +335,30 @@ function renderResult(result: TranslationResult, source: string) {
   document.querySelector("#speak-source")?.addEventListener("click", async (event) => {
     const button = event.currentTarget as HTMLButtonElement;
     button.disabled = true;
-    await speakText(
-      result.pronunciationText || sourceText,
-      result.sourceLanguage
-    );
-    button.disabled = false;
+    try {
+      const message = document.querySelector<HTMLElement>("#popup-speech-error");
+      if (message) message.hidden = true;
+      await speakText(sourceText, result.sourceLanguage);
+    } catch (error) {
+      const message = document.querySelector<HTMLElement>("#popup-speech-error");
+      if (message) { message.textContent = error instanceof Error ? error.message : String(error); message.hidden = false; resizeSoon(); }
+    } finally {
+      button.disabled = false;
+    }
   });
   document.querySelector("#speak-result")?.addEventListener("click", async (event) => {
     const button = event.currentTarget as HTMLButtonElement;
     button.disabled = true;
-    await speakText(result.translation, result.targetLanguage);
-    button.disabled = false;
+    try {
+      const message = document.querySelector<HTMLElement>("#popup-speech-error");
+      if (message) message.hidden = true;
+      await speakText(result.translation, result.targetLanguage);
+    } catch (error) {
+      const message = document.querySelector<HTMLElement>("#popup-speech-error");
+      if (message) { message.textContent = error instanceof Error ? error.message : String(error); message.hidden = false; resizeSoon(); }
+    } finally {
+      button.disabled = false;
+    }
   });
   resizeSoon();
 }
